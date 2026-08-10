@@ -27,7 +27,8 @@ ps3top              # TUI (auto-discovers the console)
 ps3top --once       # plain one-shot status (scripting/cron friendly)
 ```
 
-From a clone: `make install` (or `make build` / `make test` / `make vet`).
+From a clone: `make install` puts a stripped release build in `~/.bin`;
+`make` lists the other targets (build, run, test, clean).
 
 Flags: `--host` (default: auto-discover; env `PS3TOP_HOST`) · `--interval`
 (15s, min 5s) · `--alarm` (80°C) · `--no-art` · `--once` · `--version`.
