@@ -35,7 +35,7 @@ type Status struct {
 	RSXTemp    int    // °C, or unknown
 	FanMode    string // "SYSCON" or "manual" ("" if neither marker is present)
 	FanPct     int    // %, or unknown
-	MaxTemp    int    // manual mode only: °C ceiling at which webMAN forces the fan up; else unknown
+	MaxTemp    int    // dynamic mode only: °C ceiling at which webMAN forces the fan up; else unknown
 	MemFreeKB  int    // free available memory (meminfo.avail) — ~1MB in-game is normal; or unknown
 	HDDFreeGB  float64
 	PlayTime   string // "00:28:34" (empty on XMB)
@@ -110,12 +110,51 @@ func consoleRank(name string) int {
 
 type Client struct {
 	base string
+	host string
 	http *http.Client
+}
+
+// normalizeHost turns a --host / PS3TOP_HOST value into the bare authority the
+// client addresses. webMAN is reached as host[:port] and nothing else: a value
+// carrying a path silently prefixes every endpoint — status becomes
+// /prefix/cpursx.ps3, a mount becomes /prefix/mount_ps3/... — and the failures
+// that follow look like the console misbehaving rather than like a typo. A
+// leading http:// is tolerated because it's the obvious thing to paste.
+func normalizeHost(h string) (string, error) {
+	h = strings.TrimSpace(h)
+	if s := strings.TrimPrefix(h, "http://"); s != h {
+		h = s
+	} else if strings.Contains(h, "://") {
+		return "", fmt.Errorf("only http is supported: %q", h)
+	}
+	h = strings.TrimSuffix(h, "/")
+	if h == "" {
+		return "", fmt.Errorf("empty host")
+	}
+	if i := strings.IndexAny(h, "/?#@ \t"); i >= 0 {
+		return "", fmt.Errorf("expected host or host:port, got %q", h)
+	}
+	// url.Parse is what enforces the authority shape: brackets around an IPv6
+	// literal, a numeric port, no stray delimiters.
+	u, err := url.Parse("http://" + h)
+	if err != nil {
+		return "", fmt.Errorf("bad host %q: %w", h, err)
+	}
+	if u.Hostname() == "" {
+		return "", fmt.Errorf("bad host %q", h)
+	}
+	if p := u.Port(); p != "" {
+		if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
+			return "", fmt.Errorf("bad port in %q", h)
+		}
+	}
+	return u.Host, nil
 }
 
 func NewClient(host string) *Client {
 	return &Client{
 		base: "http://" + host,
+		host: host,
 		http: &http.Client{
 			// Hard backstop only — every caller passes a context with the real
 			// deadline (status 6s, games/covers 8s), which also bounds body reads.
@@ -123,6 +162,19 @@ func NewClient(host string) *Client {
 			Transport: &http.Transport{
 				DisableKeepAlives: true,
 				DialContext:       (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
+			},
+			// webMAN doesn't redirect, so a redirect means we aren't talking to
+			// the console we were pointed at. Following one off-host would aim
+			// the next state-changing GET — mount, eject, shutdown — at whatever
+			// answered, while the UI still displays the address you chose.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				if req.URL.Host != via[0].URL.Host {
+					return fmt.Errorf("refusing redirect to %s (asked for %s)", req.URL.Host, via[0].URL.Host)
+				}
+				if len(via) >= 5 {
+					return fmt.Errorf("too many redirects")
+				}
+				return nil
 			},
 		},
 	}
@@ -183,8 +235,10 @@ func (c *Client) Popup(ctx context.Context, msg string) error {
 }
 
 // Fan commands, taken from the links the status page hangs on its own
-// temperature and fan readings: "up"/"dn" step the fan speed, "mode" toggles
-// SYSCON ↔ manual.
+// temperature and fan readings: "up"/"dn" step the fan, "mode" advances
+// webMAN's fan strategy. Note "mode" is a one-way cycle through webMAN's own
+// states, not a SYSCON toggle — every state it reaches has webMAN fan control
+// enabled, and only /setup.ps3 hands control back to SYSCON.
 //
 // These render the whole status page as their response, so the reply IS the
 // new state — no follow-up poll, and the caller can report the actual delta
@@ -269,13 +323,14 @@ func parseStatus(html string) Status {
 		s.FanMode = "manual"
 	}
 	if m := reGameName.FindStringSubmatch(html); m != nil {
-		if v := reGameVer.FindStringSubmatch(m[1]); v != nil {
+		name := sanitize(m[1])
+		if v := reGameVer.FindStringSubmatch(name); v != nil {
 			s.GameVer = v[1]
 		}
-		s.GameTitle = strings.TrimSpace(reGameVer.ReplaceAllString(m[1], ""))
+		s.GameTitle = strings.TrimSpace(reGameVer.ReplaceAllString(name, ""))
 	}
 	if m := reMounted.FindStringSubmatch(html); m != nil {
-		s.MountedISO = m[1]
+		s.MountedISO = sanitize(m[1])
 	}
 	if m := reLifeBits.FindStringSubmatch(s.Lifetime); m != nil {
 		s.LifeDays, _ = strconv.Atoi(m[1])
@@ -285,9 +340,53 @@ func parseStatus(html string) Status {
 	return s
 }
 
+// sanitize neutralizes a string that came off the wire before it can reach the
+// terminal. Every one of these fields — titles, firmware, versions, paths — is
+// eventually printed, and webMAN is unauthenticated HTTP discovered by a
+// substring match, so the bytes are not trustworthy just because they arrived
+// on the LAN. A raw ESC in a game title is a cursor move, a screen rewrite, or
+// an OSC 52 clipboard write, depending on the terminal.
+//
+// Same reasoning as escaping untrusted text on its way into HTML: do it once at
+// the boundary, not at each of the dozen render sites, and never rely on a
+// style wrapper to have done it. Printable text is untouched, CJK and the ™/®
+// real titles carry included. Whitespace controls fold to a space so a wrapped
+// field reads as one line; everything else in C0/C1 and the invisible bidi
+// overrides is dropped.
+func sanitize(s string) string {
+	if strings.IndexFunc(s, badRune) < 0 {
+		return s // the overwhelming common case — don't allocate for it
+	}
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r == '\t' || r == '\n' || r == '\v' || r == '\f' || r == '\r':
+			return ' '
+		case badRune(r):
+			return -1
+		}
+		return r
+	}, s)
+}
+
+func badRune(r rune) bool {
+	switch {
+	case r < 0x20, r == 0x7f: // C0 and DEL
+		return true
+	case r >= 0x80 && r <= 0x9f: // C1 (an 8-bit CSI is one byte, not two)
+		return true
+	case r == 0x200e, r == 0x200f: // LRM / RLM
+		return true
+	case r >= 0x202a && r <= 0x202e: // bidi embedding and override
+		return true
+	case r >= 0x2066 && r <= 0x2069: // bidi isolates
+		return true
+	}
+	return false
+}
+
 func matchStr(re *regexp.Regexp, s string) string {
 	if m := re.FindStringSubmatch(s); m != nil {
-		return strings.TrimSpace(m[1])
+		return strings.TrimSpace(sanitize(m[1]))
 	}
 	return ""
 }
@@ -346,14 +445,16 @@ func parseGames(xml string) []Game {
 		for _, f := range reField.FindAllStringSubmatch(e[1], -1) {
 			switch f[1] {
 			case "icon":
-				g.IconPath = f[2]
+				g.IconPath = sanitize(f[2])
 			case "title":
-				// titles can contain literal newlines (e.g. "MOCK PLANET\nSPECIAL EDITION")
-				g.Title = strings.Join(strings.Fields(f[2]), " ")
+				// titles can contain literal newlines (e.g. "MOCK PLANET\nSPECIAL
+				// EDITION"), so collapse whitespace before sanitizing — otherwise
+				// the two halves of the name would be glued together
+				g.Title = sanitize(strings.Join(strings.Fields(f[2]), " "))
 			case "module_action":
-				g.MountURL = f[2]
+				g.MountURL = sanitize(f[2])
 			case "info":
-				g.Category = f[2]
+				g.Category = sanitize(f[2])
 			}
 		}
 		if m := reTitID.FindStringSubmatch(g.Title); m != nil {
@@ -366,15 +467,26 @@ func parseGames(xml string) []Game {
 		}
 	}
 	// consoles in chronological order (PSX → PS2 → PSP → PS3); within a
-	// console, series-aware alphabetical (originals before numbered sequels)
-	sort.Slice(games, func(i, j int) bool {
-		ri, rj := consoleRank(games[i].Console()), consoleRank(games[j].Console())
+	// console, series-aware alphabetical (originals before numbered sequels).
+	// Sorting an index keeps each game paired with the key computed for it.
+	keys := gameKeys(games)
+	order := make([]int, len(games))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		a, b := order[i], order[j]
+		ri, rj := consoleRank(games[a].Console()), consoleRank(games[b].Console())
 		if ri != rj {
 			return ri < rj
 		}
-		return lessGames(games[i], games[j])
+		return keys[a].less(keys[b])
 	})
-	return games
+	out := make([]Game, len(order))
+	for i, gi := range order {
+		out[i] = games[gi]
+	}
+	return out
 }
 
 var reFranchise = regexp.MustCompile(`^([^:]+):`)
@@ -390,18 +502,77 @@ func franchiseKey(title string) string {
 	return strings.Join(strings.Fields(m[1]), " ")
 }
 
-// lessGames adds one hint on top of lessTitles: title-ID digits are assigned
-// in registration order within a prefix pool, so two entries of the SAME
-// colon-franchise with the SAME 4-letter prefix sort by ID — release order
-// for subtitle-only sequels the words can't date. It stays a hint only:
-// pools differ per region/publisher block (a franchise can hop pools between
-// releases, e.g. BLUS → BLES), so everything else uses the title rules.
-func lessGames(a, b Game) bool {
-	if fa := franchiseKey(a.Title); fa != "" && fa == franchiseKey(b.Title) &&
-		len(a.ID) == 9 && len(b.ID) == 9 && a.ID[:4] == b.ID[:4] && a.ID != b.ID {
-		return a.ID < b.ID
+// gameKey is how one game positions itself in the list: a title to collate on,
+// and a release-order tiebreak used only inside a franchise block.
+type gameKey struct {
+	lead string // the title this entry sorts as — shared by a whole franchise
+	id   string // title ID, the release-order hint ("" when the hint is off)
+}
+
+func (x gameKey) less(y gameKey) bool {
+	if lessTitles(x.lead, y.lead) {
+		return true
 	}
-	return lessTitles(a.Title, b.Title)
+	if lessTitles(y.lead, x.lead) {
+		return false
+	}
+	return x.id < y.id
+}
+
+// noPool marks a franchise member carrying no usable title ID.
+const noPool = "-"
+
+// gameKeys adds one hint on top of lessTitles: title-ID digits are assigned in
+// registration order within a prefix pool, so entries of the SAME
+// colon-franchise sharing ONE 4-letter pool sort by ID — release order for
+// subtitle-only sequels the words can't date. It stays a hint: pools differ per
+// region/publisher block (a franchise can hop BLUS → BLES), and a franchise
+// that hops one falls back to the title rules entirely.
+//
+// The hint cannot be decided per pair, which is what the previous version did.
+// sort requires a strict weak ordering and "compare these two by ID because
+// they happen to share a pool" is not transitive: A="F: Zulu"/MOCK00001,
+// B="F: Alpha"/MOCK00002, C="F: Mike"/DEMO00001 gives A<B by ID, B<C by title,
+// C<A by title — a cycle, so the library sorted differently depending on the
+// order webMAN happened to list it in.
+//
+// Deciding it per franchise isn't enough either: ":" isn't a token, so a
+// colon-less title ("F Mike") collates among the "F: …" entries and can land
+// between two members that are ordering themselves by ID — the same cycle from
+// outside. The fix is to make a qualifying franchise occupy one contiguous
+// block: every member sorts under the same lead title, and the ID only breaks
+// ties inside it.
+func gameKeys(games []Game) []gameKey {
+	pools := map[string]map[string]bool{}
+	lead := map[string]string{}
+	for _, g := range games {
+		f := franchiseKey(g.Title)
+		if f == "" {
+			continue
+		}
+		if pools[f] == nil {
+			pools[f] = map[string]bool{}
+		}
+		if len(g.ID) == 9 {
+			pools[f][g.ID[:4]] = true
+		} else {
+			pools[f][noPool] = true
+		}
+		// the block sorts where its earliest title would have
+		if cur, seen := lead[f]; !seen || lessTitles(g.Title, cur) {
+			lead[f] = g.Title
+		}
+	}
+	keys := make([]gameKey, len(games))
+	for i, g := range games {
+		f := franchiseKey(g.Title)
+		if p := pools[f]; f != "" && len(p) == 1 && !p[noPool] {
+			keys[i] = gameKey{lead: lead[f], id: g.ID}
+			continue
+		}
+		keys[i] = gameKey{lead: g.Title}
+	}
+	return keys
 }
 
 // lessTitles orders titles for display: token-by-token, numbers compare

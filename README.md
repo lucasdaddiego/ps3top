@@ -71,8 +71,12 @@ A field the status page doesn't carry renders as a dim `—`, never as a number.
 This matters more than it looks: `0` is a value webMAN legitimately reports
 (`FAN SPEED: 0%`), so it can't double as "absent" — and a temperature of 0°
 colors as perfectly healthy, meaning a webMAN markup change would otherwise
-make a broken parser look like a cool console. Losing fields also raises one
-flash: `status page: N of 6 fields not found`.
+make a broken parser look like a cool console. Losing fields also raises a
+flash: `status page: N of 6 fields not found`. It fires when the count *gets
+worse*, not once per run — a steady break stays quiet after the first warning
+instead of nagging every 15s, an outage and recovery into the same state don't
+re-warn, and a page that later breaks harder still says so. The em dashes are
+the standing signal; the flash is the explanation.
 
 Header extras: game version (`· v01.15`) next to the running title, and the
 syscon lifetime counters right of the metrics — `∞ 218d · 2709 boots ·
@@ -176,6 +180,19 @@ one GET per keypress turns a quick 24%→40% adjustment into a pile-up that read
 as an unresponsive UI. The queue is capped, cleared on error, and shown live in
 the fan row (`⋯+3`) so a press registers before the console has answered.
 
+The queue is **ordered, not netted**, and that matters precisely because `?up`
+means different things in different modes. A step queued before a `?mode` was
+aimed at the old mode: press `↑↑` in manual to spin the fan up, then `f`, and
+sending the mode change first would leave those two presses raising the
+*temperature ceiling* on a console you were trying to cool. Press order is
+preserved exactly; only an immediate `↑`/`↓` reversal cancels, and only against
+the tail, so it can never reach across a `?mode`.
+
+For the same reason the fan keys **do nothing until a status has established
+the mode**. With the mode unknown, `↑↓` can't say what they'd move and `f`
+can't warn that it's a one-way door out of SYSCON — so they flash and wait
+rather than guess.
+
 No confirm on fan changes, deliberately: the in-game confirm elsewhere exists
 because `/mount_ps3` can pull a running game's disc, which loses progress. A
 fan step has no such failure mode — it's small, immediately visible, and undone
@@ -195,9 +212,18 @@ since covers are disposable and this file isn't.
 
 Session length comes from webMAN's own `PlayTime` field rather than a clock
 ps3top starts, so a record is right even when ps3top joins a game already in
-progress or is restarted mid-session. That's also why there's no open-session
-sidecar file to recover after a crash. A session that both starts and ends
-while ps3top isn't running is simply never seen.
+progress. That's also why there's no open-session sidecar file to recover after
+a crash. A session that both starts and ends while ps3top isn't running is
+simply never seen.
+
+The catch is that `PlayTime` is *cumulative* for the whole game process: quit
+ps3top mid-game and it writes the total so far; the next run writes the total
+again when the game finally ends. Both lines describe one session. They're
+recognised as one by their **start** time (`end − secs`, stable across
+restarts) and merged on load, keeping the longest reading and counting it once.
+The start time is derived rather than stored, so a log written by an older
+ps3top is repaired the same way. Two genuinely separate plays still count
+twice — only readings starting within five minutes of each other merge.
 
 What it buys you: `s` toggles the list between alphabetical and
 recently-played (so the handful of games you actually play float above the
@@ -215,8 +241,9 @@ mounted → launch) · `p` play = mount+launch · `u` eject · `/` fuzzy filter
 played · `t` thermal screen · `m` popup message on the TV · `g` reload games ·
 `r` refresh now · `S`/`R` shutdown/restart (confirmed) · `q` quit.
 
-Inside the thermal screen: `+`/`−` fan speed · `f` fan mode · `r` refresh ·
-`esc` (or `t`, or `q`) back. `q` closes the screen rather than quitting ps3top
+Inside the thermal screen: `+`/`−` (or `↑↓`) fan speed in manual mode, target
+temperature in dynamic — the footer names whichever it currently is · `f` fan
+mode · `r` refresh · `esc` (or `t`, or `q`) back. `q` closes the screen rather than quitting ps3top
 — quitting out of a subscreen on the key that everywhere else means "back" is
 a nasty surprise mid-session.
 
@@ -226,17 +253,36 @@ the right, plus `recent` when that sort is active. Games are numbered per
 console and sorted alphabetically; starts on the PS3 tab. `s` keeps the cursor
 on whatever game it was on, so you can flip sorts without losing your place.
 
-While a game is running, mount/play/eject/power ask for a red confirm first —
-deliberately, because the `/mount_ps3` silent variant bypasses webMAN's own
-in-game mount protection.
+While a game is running, mount/play/launch/eject/power ask for a red confirm
+first — deliberately, because the `/mount_ps3` silent variant bypasses webMAN's
+own in-game mount protection.
+
+They ask **equally hard when ps3top can't tell**: before the first status has
+landed, and after any failed poll, the last reading is stale and "no game is
+running" would be a guess. The prompt says the state is unknown rather than
+naming a title it doesn't trust. Only a console known to be sitting on the XMB
+skips the confirm.
 
 ## How it talks to the PS3 (and why it's gentle)
 
 - One `GET /cpursx.ps3` per 15s (webMAN's own web-UI refresh cadence; the page
   is ~6.6KB and carries every field server-rendered). Immediate extra poll
-  after an action. One request in flight max, fresh connection each time
-  (webMAN's server has ~4 session slots — never hold one), 2s/4s timeouts.
-  Offline → retry every 15s.
+  after an action. **One console-state request in flight at a time** — status
+  polls, actions and fan commands share one gate, so a scheduled poll can't
+  race a fan reply and overwrite the newer reading with the older one; a poll
+  that comes due while busy is deferred, not dropped. Fresh connection each
+  time (webMAN's server has ~4 session slots — never hold one). Timeouts: 2s
+  dial, 6s per request, 10s client backstop (8s for games and covers).
+  Offline → retry every 15s. Game-list and cover fetches are outside that gate
+  by design — they're idempotent reads that don't carry console state.
+- `--host` is parsed as a bare `host[:port]` authority and rejected otherwise:
+  a value with a path silently prefixed every endpoint. Redirects to a
+  different host are refused, so an action can't be aimed somewhere other than
+  the address on screen.
+- Every string webMAN sends — titles, firmware, paths — is stripped of terminal
+  control sequences at the parser, before it can reach the screen. Covers are
+  checked for a real PNG header and sane dimensions before being cached or
+  handed to the terminal's image decoder.
 - Game list from the **static** `mygames.xml` (`/dev_hdd0/xmlhost/game_plugin/`),
   fetched at startup and on `g` only. It's XMB pseudo-XML (`<>value</>`), hence
   the regex parser.
@@ -296,7 +342,16 @@ header's degradation order, which is a judgment call worth not regressing.
 bind only inside the thermal screen, that `q` there means "back" and not
 "quit", and — via `httptest` — that the fan endpoints are addressed correctly
 and their response is parsed as the new status. **Nothing in the suite talks to
-a real console**; fan control has never been fired at hardware from here.
+a real console** — every fan test runs against `httptest`. Fan commands *have*
+been fired at hardware by hand, which is where the three marker shapes and the
+dynamic-mode `?up` behaviour were observed; it's the automated suite that never
+touches the console.
+
+`testdata/cpursx_xmb.html` is **derived** from the in-game fixture (game block
+and PlayTime removed), not captured. It proves the parser handles an absent
+game block — which feeds the mount/eject guard — but not that this is
+byte-for-byte what a console emits on the XMB. Replace it with a scrubbed real
+capture when one is to hand.
 
 If webMAN gets updated and parsing breaks: capture the fresh pages to
 somewhere **outside the repo** (`curl -s http://$PS3/cpursx.ps3` and

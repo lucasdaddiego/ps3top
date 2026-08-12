@@ -12,7 +12,22 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-const version = "1.0.0"
+// Set via -ldflags at build time (see the Makefile). The defaults are what a
+// plain `go build` or `go run .` produces, and they say so rather than naming a
+// release the source may have moved well past — a bug report quoting a version
+// that doesn't match the code costs more than it saves.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
+
+func versionString() string {
+	if version == "dev" {
+		return fmt.Sprintf("ps3top %s (%s, built %s)", version, commit, date)
+	}
+	return fmt.Sprintf("ps3top %s (%s)", version, commit)
+}
 
 func main() {
 	host := flag.String("host", os.Getenv("PS3TOP_HOST"), "PS3 address (default: auto-discover; env PS3TOP_HOST)")
@@ -25,7 +40,7 @@ func main() {
 	flag.Parse()
 
 	if *ver {
-		fmt.Println("ps3top", version)
+		fmt.Println(versionString())
 		return
 	}
 	if *interval < 5*time.Second {
@@ -60,6 +75,14 @@ func main() {
 		}
 		*host = h
 	}
+	// validate before anything is sent: a host carrying a path or scheme would
+	// otherwise prefix every endpoint and fail as if the console were at fault
+	normHost, err := normalizeHost(*host)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ps3top: --host:", err)
+		os.Exit(1)
+	}
+	*host = normHost
 
 	cli := NewClient(*host)
 
@@ -68,9 +91,16 @@ func main() {
 		return
 	}
 
+	hist, err := loadHistory(dataRoot)
+	if err != nil {
+		// not fatal: the TUI works fine without totals, and refusing to start
+		// over a history problem is worse than starting without one
+		fmt.Fprintln(os.Stderr, "ps3top: history:", err)
+	}
+
 	// 30fps caps the renderer's repaint ticker — half the default wakeups, and
 	// with a 15s poll cadence even that is mostly idle no-ops.
-	m := newModel(cli, *host, *interval, *alarm, !*noArt, cacheDir, loadHistory(dataRoot))
+	m := newModel(cli, *host, *interval, *alarm, !*noArt, cacheDir, hist)
 	if _, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithFPS(30)).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "ps3top:", err)
 		os.Exit(1)

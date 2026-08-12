@@ -379,6 +379,31 @@ func (m *model) fanModeHint() string {
 	return "f mode"
 }
 
+// fanQueueLabel summarises what's still queued. A pending mode change is called
+// out rather than folded into the count: it's the one command that changes what
+// the others will do when they land.
+func fanQueueLabel(q []string) string {
+	net, mode := 0, false
+	for _, c := range q {
+		switch c {
+		case fanUp:
+			net++
+		case fanDown:
+			net--
+		case fanMode:
+			mode = true
+		}
+	}
+	s := "⋯"
+	if net != 0 {
+		s += fmt.Sprintf("%+d", net)
+	}
+	if mode {
+		s += "·mode"
+	}
+	return s
+}
+
 // fanRow carries the fan state and its own controls — the point of putting fan
 // control on this screen is that the feedback is right above it.
 func (m *model) fanRow(w int) []string {
@@ -413,10 +438,8 @@ func (m *model) fanRow(w int) []string {
 	// dropped keystroke
 	pending := ""
 	switch {
-	case m.fanQueue > 0:
-		pending = accentSt.Render(fmt.Sprintf(" ⋯+%d", m.fanQueue))
-	case m.fanQueue < 0:
-		pending = accentSt.Render(fmt.Sprintf(" ⋯%d", m.fanQueue))
+	case len(m.fanQueue) > 0:
+		pending = accentSt.Render(" " + fanQueueLabel(m.fanQueue))
 	case m.fanBusy:
 		pending = accentSt.Render(" ⋯")
 	}

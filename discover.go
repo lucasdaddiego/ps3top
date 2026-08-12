@@ -25,15 +25,27 @@ const (
 	sweepWorkers       = 128
 )
 
+// sweepPort is webMAN's fixed HTTP port, as a seam: binding 80 needs root, so
+// the suite points the sweep at a loopback server on a high port instead. It
+// only affects which port is dialled and verified — the address handed back is
+// the bare IP either way, so production behaviour is identical.
+var sweepPort = "80"
+
+// localNets is a seam for the same reason: a test that called discoverHost
+// unguarded would sweep the developer's actual LAN, 254 dials per subnet.
+var localNets = localSubnets
+
 // discoverHost finds the console: cached last-good host first, then a sweep.
 func discoverHost(cachePath string) (string, error) {
 	if b, err := os.ReadFile(cachePath); err == nil {
-		if host := strings.TrimSpace(string(b)); host != "" && isWebMAN(host) {
+		// the cache is ours, but it's a file on disk — validate it like any
+		// other input rather than concatenating it into a URL on trust
+		if host, err := normalizeHost(string(b)); err == nil && isWebMAN(host) {
 			return host, nil
 		}
 	}
 
-	subnets := localSubnets()
+	subnets := localNets()
 	if len(subnets) == 0 {
 		return "", fmt.Errorf("no private IPv4 network found — pass --host")
 	}
@@ -114,6 +126,11 @@ func subnetNames(subnets []subnet) string {
 // confirmed webMAN address ("" if none). First hit cancels the rest — with
 // two consoles on the LAN, whichever answers first wins; use --host to pick.
 func sweep(subnets []subnet) string {
+	// read once, up front: the first hit returns immediately while the rest of
+	// the probes are still winding down, so the goroutines outlive this call
+	// and must not be reading a variable someone else can still change
+	port := sweepPort
+
 	ctx, cancel := context.WithTimeout(context.Background(), sweepTimeout)
 	defer cancel()
 
@@ -135,13 +152,14 @@ func sweep(subnets []subnet) string {
 				case <-ctx.Done():
 					return
 				}
+				addr := net.JoinHostPort(ip, port)
 				d := net.Dialer{Timeout: sweepDialTimeout}
-				conn, err := d.DialContext(ctx, "tcp", ip+":80")
+				conn, err := d.DialContext(ctx, "tcp", addr)
 				if err != nil {
 					return
 				}
 				conn.Close()
-				if isWebMAN(ip) {
+				if isWebMAN(addr) {
 					select {
 					case found <- ip:
 						cancel()

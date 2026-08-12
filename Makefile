@@ -3,8 +3,18 @@
 
 BINARY      := ps3top
 INSTALL_DIR := $(HOME)/.bin
+
+# Version metadata, stamped in at link time. A plain `go build` / `go run .`
+# leaves the defaults ("dev"), which is the honest answer — the source moves on
+# between tags, and a --version that names a release the code has passed sends
+# bug reports chasing the wrong revision.
+VERSION := $(shell git describe --tags --dirty --always 2>/dev/null || echo dev)
+COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+DATE    := $(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+STAMP   := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
+
 # Release build: strip symbols/DWARF (-s -w) and local paths (-trimpath).
-RELEASE     := -trimpath -ldflags "-s -w"
+RELEASE := -trimpath -ldflags "-s -w $(STAMP)"
 
 .DEFAULT_GOAL := help
 .PHONY: help build run test install clean
@@ -13,7 +23,7 @@ help: ## List the targets (the default goal)
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-8s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
 build: ## Compile the binary into ./ps3top
-	go build -o $(BINARY) .
+	go build -ldflags "$(STAMP)" -o $(BINARY) .
 
 run: ## Launch the TUI (auto-discovers the console)
 	go run .

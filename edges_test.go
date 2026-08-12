@@ -1,0 +1,791 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"image"
+	"image/png"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+)
+
+// Every action key, taken all the way to the wire. The guard tests stop at the
+// prompt, which leaves the closure that actually calls the console unrun — the
+// one place a wrong endpoint or a swapped argument would hide.
+func TestActionKeysReachTheConsole(t *testing.T) {
+	for _, c := range []struct {
+		key     string
+		confirm bool
+		want    string
+	}{
+		{key: "u", want: "/mount_ps3/unmount"},
+		{key: "p", want: "/play.ps3/dev_hdd0/PS3ISO/SampleGame2.iso"},
+		{key: "enter", want: "/mount_ps3/dev_hdd0/PS3ISO/SampleGame2.iso"},
+		{key: "S", confirm: true, want: "/shutdown.ps3"},
+		{key: "R", confirm: true, want: "/restart.ps3"},
+	} {
+		t.Run(c.key, func(t *testing.T) {
+			var got string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if !strings.HasPrefix(r.URL.Path, "/cpursx") {
+					got = r.URL.RequestURI()
+				}
+				w.Write([]byte("webMAN CPU: 58°C"))
+			}))
+			defer srv.Close()
+
+			m := liveModel(t, 120)
+			m.cli = NewClient(strings.TrimPrefix(srv.URL, "http://"))
+			m.st.InGame = false // known idle, so no prompt for the media keys
+			m.games[0] = Game{Title: "Sample Game™ 2", ID: "MOCK30982", Category: "hdd0/PS3ISO",
+				Path: "/dev_hdd0/PS3ISO/SampleGame2.iso", MountURL: "/mount_ps3/dev_hdd0/PS3ISO/SampleGame2.iso"}
+			m.applyFilter("")
+
+			_, cmd := m.handleKey(key(c.key))
+			if c.confirm {
+				if m.confirm == nil {
+					t.Fatalf("%q raised no prompt", c.key)
+				}
+				_, cmd = m.handleKey(key("y"))
+			}
+			m = exec(t, m, cmd)
+			if got != c.want {
+				t.Errorf("%q hit %q, want %q", c.key, got, c.want)
+			}
+			if !strings.Contains(m.flash, "✓") {
+				t.Errorf("%q didn't report success: %q", c.key, m.flash)
+			}
+		})
+	}
+}
+
+// Launching an already-mounted game is its own endpoint, reached only when the
+// selected row is the mounted disc.
+func TestLaunchReachesTheConsole(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/cpursx") {
+			got = r.URL.RequestURI()
+		}
+		w.Write([]byte("webMAN CPU: 58°C"))
+	}))
+	defer srv.Close()
+
+	m := liveModel(t, 120)
+	m.cli = NewClient(strings.TrimPrefix(srv.URL, "http://"))
+	m.st.InGame = false
+	m.st.MountedISO = m.games[0].Path
+	if !m.mounted(m.games[0]) {
+		t.Fatal("fixture isn't mounted")
+	}
+	_, cmd := m.handleKey(key("enter"))
+	exec(t, m, cmd)
+	if got != "/play.ps3" {
+		t.Errorf("launch hit %q, want /play.ps3", got)
+	}
+}
+
+func TestPopupReachesTheConsole(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/cpursx") {
+			got = r.URL.RequestURI()
+		}
+		w.Write([]byte("webMAN CPU: 58°C"))
+	}))
+	defer srv.Close()
+
+	m := liveModel(t, 120)
+	m.cli = NewClient(strings.TrimPrefix(srv.URL, "http://"))
+	m.handleKey(key("m"))
+	for _, r := range "hi" {
+		m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	_, cmd := m.handleKey(key("enter"))
+	exec(t, m, cmd)
+	if got != "/popup.ps3/hi" {
+		t.Errorf("popup hit %q", got)
+	}
+}
+
+// The fan command's closure is where the previous state is captured for the
+// delta report, so it has to run for real.
+func TestFanCommandRoundTrip(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.RequestURI()
+		w.Write([]byte(`webMAN CPU: 58°C<br>RSX: 61°C<a href="x">FAN SPEED:  31% (0x4f)</a>`))
+	}))
+	defer srv.Close()
+
+	m := liveModel(t, 120)
+	m.cli = NewClient(strings.TrimPrefix(srv.URL, "http://"))
+	m.handleKey(key("t"))
+	m.st.FanMode, m.st.FanPct = "manual", 26
+
+	_, cmd := m.handleKey(key("up"))
+	m = exec(t, m, cmd)
+	if got != "/cpursx.ps3?up" {
+		t.Errorf("fan hit %q", got)
+	}
+	if !strings.Contains(m.flash, "26%") || !strings.Contains(m.flash, "31%") {
+		t.Errorf("fan report didn't name the move: %q", m.flash)
+	}
+	if m.st.FanPct != 31 {
+		t.Errorf("reply not adopted as the new state (fan %d%%)", m.st.FanPct)
+	}
+}
+
+func TestMainViewRefreshAndReloadKeys(t *testing.T) {
+	m := liveModel(t, 120)
+	m.cli = liveServer(t)
+
+	if _, cmd := m.handleKey(key("r")); cmd == nil {
+		t.Error("r didn't refresh")
+	}
+	m.inFlight = true
+	if _, cmd := m.handleKey(key("r")); cmd != nil {
+		t.Error("r polled on top of a request in flight")
+	}
+	m.inFlight = false
+	_, reload := m.handleKey(key("g"))
+	if reload == nil {
+		t.Fatal("g didn't reload the library")
+	}
+	m = exec(t, m, reload)
+	if len(m.games) != 22 {
+		t.Errorf("g reloaded %d games", len(m.games))
+	}
+
+	// keys arrive through Update in the real runtime, not handleKey directly
+	mm, _ := m.Update(key("t"))
+	if !mm.(*model).thermalOn {
+		t.Error("a key routed through Update didn't reach handleKey")
+	}
+}
+
+// --- model edge states ---
+
+func TestNewModelWithoutHistory(t *testing.T) {
+	// every read path dereferences hist; an empty log has to be the no-op
+	m := newModel(nil, "h", time.Second, 80, false, "", nil)
+	if m.hist == nil || m.hist.stats == nil {
+		t.Fatal("nil history wasn't replaced with an empty one")
+	}
+	if _, ok := m.hist.stat(Game{ID: "MOCK1"}); ok {
+		t.Error("empty history reported a stat")
+	}
+	m.recalcPlayCol()
+}
+
+func TestViewBeforeTheFirstResize(t *testing.T) {
+	m := liveModel(t, 120)
+	m.width = 0
+	if got := m.View(); got != "starting…" {
+		t.Errorf("View before a size = %q", got)
+	}
+	// the art panel widens the frame and narrows the list
+	m.width = 120
+	m.artOn = true
+	wide := m.listWidth()
+	m.artOn = false
+	if bare := m.listWidth(); bare <= wide {
+		t.Error("the art panel didn't reserve any width")
+	}
+	if !strings.Contains(m.View(), "Sample Game") {
+		t.Error("View dropped the library")
+	}
+	m.artOn = true
+	m.View() // with the panel joined on
+}
+
+func TestAlarmRingsOnceOnCrossing(t *testing.T) {
+	defer quitting.Store(false)
+	quitting.Store(false)
+	m := liveModel(t, 120)
+	m.alarm, m.alarming = 70, false
+
+	hot := m.st
+	hot.CPUTemp = 82
+	out := captureStdout(t, func() { m.Update(statusMsg{st: hot}) })
+	if !strings.Contains(out, "\a") {
+		t.Error("crossing the alarm threshold didn't ring the bell")
+	}
+	if !m.alarming {
+		t.Error("alarm state not latched")
+	}
+	// still hot on the next poll: no second bell
+	out = captureStdout(t, func() { m.Update(statusMsg{st: hot}) })
+	if strings.Contains(out, "\a") {
+		t.Error("the bell rang again while already alarming")
+	}
+}
+
+func TestScrollMarginFollowsTheCursorDown(t *testing.T) {
+	m := liveModel(t, 120)
+	m.listH = 4
+	m.order = make([]int, 0, 40)
+	m.games = make([]Game, 40)
+	for i := range m.games {
+		m.games[i] = Game{Title: "G", Category: "hdd0/PS3ISO"}
+		m.order = append(m.order, i)
+	}
+	m.cursor, m.offset = 0, 0
+	for i := 0; i < 30; i++ {
+		m.moveCursor(1)
+	}
+	if m.offset == 0 {
+		t.Error("the viewport never scrolled to follow the cursor")
+	}
+	if m.cursor < m.offset || m.cursor >= m.offset+m.listH {
+		t.Errorf("cursor %d outside the visible window [%d,%d)", m.cursor, m.offset, m.offset+m.listH)
+	}
+}
+
+// A history write that fails while the game is CHANGING must not fold the new
+// game's counter into the session it couldn't close.
+func TestSessionSwitchWithABrokenLog(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "blocked"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := &history{
+		path:     filepath.Join(dir, "blocked", "sub", "history.ndjson"),
+		stats:    map[string]gameStat{},
+		firstHDD: unknown, lastHDD: unknown,
+	}
+	m := testModel(t, dir, h)
+	m.trackSession(Status{InGame: true, GameID: "MOCK1", GameTitle: "One", PlaySecs: 3600})
+	// straight into a different game while the log is unwritable
+	m.trackSession(Status{InGame: true, GameID: "MOCK2", GameTitle: "Two", PlaySecs: 60})
+	if m.sesID != "MOCK1" || m.sesSecs != 3600 {
+		t.Errorf("open session became %s/%ds — the failed flush let the new game in", m.sesID, m.sesSecs)
+	}
+
+	// same for a counter reset that can't be recorded
+	m.trackSession(Status{InGame: true, GameID: "MOCK1", GameTitle: "One", PlaySecs: 10})
+	if m.sesSecs != 3600 {
+		t.Errorf("sesSecs = %d, want the unflushed 3600", m.sesSecs)
+	}
+}
+
+func TestFlushSessionIgnoresEmptySessions(t *testing.T) {
+	dir := t.TempDir()
+	m := testModel(t, dir, nil)
+	m.sesOn, m.sesTitle, m.sesSecs = true, "", 600 // no title
+	if m.flushSession() {
+		t.Error("a titleless session was recorded")
+	}
+	if m.sesOn {
+		t.Error("session left open")
+	}
+	m.sesOn, m.sesTitle, m.sesSecs = true, "Game", 0 // no length
+	if m.flushSession() {
+		t.Error("a zero-length session was recorded")
+	}
+	if len(mustLoad(t, dir).stats) != 0 {
+		t.Error("something reached the log")
+	}
+}
+
+func TestRefreshNowDefersWhileBusy(t *testing.T) {
+	m := liveModel(t, 120)
+	m.fanBusy = true
+	if cmd := m.refreshNow(); cmd != nil {
+		t.Error("refreshNow polled on top of a fan command")
+	}
+	if !m.needStatus {
+		t.Error("the deferred poll wasn't recorded")
+	}
+}
+
+func TestClearFlashLaterFires(t *testing.T) {
+	m := liveModel(t, 120)
+	m.flash = "something"
+	cmd := m.clearFlashLater()
+	if msg := cmd(); msg == nil {
+		t.Fatal("the flash timer produced no message")
+	} else if _, ok := msg.(clearFlashMsg); !ok {
+		t.Errorf("flash timer produced %T", msg)
+	}
+}
+
+// --- rendering edges ---
+
+func TestRenderingInATinyTerminal(t *testing.T) {
+	// every bookended line clamps its fill rather than repeating a negative
+	// count, which panics
+	for _, w := range []int{1, 2, 5, 10, 20} {
+		m := liveModel(t, w)
+		m.listH = 3
+		m.bookend("a fairly long piece of content that cannot possibly fit")
+		m.tabLine()
+		m.metricsRow(lipgloss.NewStyle())
+		m.footer()
+		m.View()
+		m.thermalOn = true
+		m.View()
+	}
+}
+
+func TestTabLineStates(t *testing.T) {
+	m := liveModel(t, 120)
+	m.consoles, m.counts = []string{"PSX", "PS2", "PS3"}, []int{1, 2, 21}
+	m.activeTab = 2
+	line := m.tabLine()
+	for _, want := range []string{"PSX", "PS2", "PS3", "│"} {
+		if !strings.Contains(line, want) {
+			t.Errorf("tab strip missing %q:\n%s", want, line)
+		}
+	}
+	// a filter shows its query and the position within the matches
+	m.filterQ = "storm"
+	if got := m.tabLine(); !strings.Contains(got, "storm") {
+		t.Errorf("filtered tab line doesn't show the query:\n%s", got)
+	}
+	m.filterQ = ""
+	m.sortRecent = true
+	if got := m.tabLine(); !strings.Contains(got, "recent") {
+		t.Errorf("recent sort not flagged:\n%s", got)
+	}
+}
+
+func TestMetricLineShowsFanMode(t *testing.T) {
+	m := liveModel(t, 120)
+	m.st.FanMode = "manual"
+	if got := m.metricsRow(lipgloss.NewStyle()); !strings.Contains(got, "manual") {
+		t.Errorf("non-SYSCON fan mode not shown:\n%s", got)
+	}
+	m.st.FanMode = "SYSCON" // the console's own control needs no annotation
+	m.metricsRow(lipgloss.NewStyle())
+	m.st.FanMode = ""
+	m.metricsRow(lipgloss.NewStyle())
+	// the bare variant, used when the frame is too narrow for a box
+	m.width = 40
+	m.metricsRow(lipgloss.NewStyle())
+}
+
+func TestValueColourBands(t *testing.T) {
+	m := liveModel(t, 120)
+	// each band has to be distinguishable, or the colour carries no information
+	seen := map[string]bool{}
+	for _, pct := range []int{10, 55, 80} {
+		seen[fanVal(pct)] = true
+	}
+	if len(seen) != 3 {
+		t.Error("fan percentage bands aren't distinct")
+	}
+	if hddVal(30.0) == hddVal(300.0) {
+		t.Error("a nearly-full disk renders like an empty one")
+	}
+	if memVal(300) == memVal(9000) {
+		t.Error("memory pressure isn't distinguished")
+	}
+	if tempVal(72, m.alarm) == tempVal(50, m.alarm) {
+		t.Error("a warm temperature renders like a cool one")
+	}
+}
+
+func TestRowShowsMountedMark(t *testing.T) {
+	m := liveModel(t, 120)
+	m.st.MountedISO = m.games[0].Path
+	if !strings.Contains(m.renderRow(0, false), "mounted") {
+		t.Error("the mounted disc isn't marked in the list")
+	}
+}
+
+func TestArtPanelVariants(t *testing.T) {
+	dir := t.TempDir()
+	m := testModel(t, dir, nil)
+	m.width, m.height, m.listH, m.artOn = 120, 30, 20, true
+	m.games = []Game{{Title: "Fixture Storm", Category: "hdd0/PSXISO"}} // PSX: no title ID
+	m.secNums, m.consoles, m.counts, m.numW = []int{1}, []string{"PSX"}, []int{1}, 1
+	m.applyFilter("")
+
+	// with no ID the panel falls back to naming the console
+	if got := m.artPanel(); !strings.Contains(got, "PSX") {
+		t.Errorf("panel didn't fall back to the console:\n%s", got)
+	}
+	// play history and the mounted mark are appended when they apply
+	m.hist.fold(sessionRec{Title: "Fixture Storm", End: time.Now().Add(-2 * time.Hour), Secs: 3600})
+	m.st.MountedISO = m.games[0].Path
+	m.online = true
+	got := m.artPanel()
+	for _, want := range []string{"1h00m", "session", "last "} {
+		if !strings.Contains(got, want) {
+			t.Errorf("panel missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestFooterStates(t *testing.T) {
+	m := liveModel(t, 120)
+
+	// a dangerous prompt with no title still names the risk
+	m.confirm = &confirmAction{label: "eject", danger: true}
+	m.st.GameTitle = ""
+	if got := m.footer(); !strings.Contains(got, "a game is running") {
+		t.Errorf("titleless danger prompt = %q", got)
+	}
+	// an ordinary prompt is not styled as a danger
+	m.confirm = &confirmAction{label: "leave SYSCON?"}
+	if got := m.footer(); !strings.Contains(got, "SYSCON") || strings.Contains(got, "⚠") {
+		t.Errorf("plain prompt = %q", got)
+	}
+	m.confirm = nil
+
+	m.popupOn = true
+	if got := m.footer(); !strings.Contains(got, "popup:") {
+		t.Errorf("popup footer = %q", got)
+	}
+	m.popupOn = false
+
+	m.flash = "something happened"
+	if got := m.footer(); !strings.Contains(got, "something happened") {
+		t.Errorf("flash footer = %q", got)
+	}
+	m.flash = ""
+
+	m.filterQ = "storm"
+	if got := m.footer(); !strings.Contains(got, "esc clear") {
+		t.Errorf("filtered footer doesn't offer to clear = %q", got)
+	}
+}
+
+// A HEN build is flagged as such; anything else keeps its second field, which
+// is where the region lives.
+func TestShortFWVariants(t *testing.T) {
+	if got := shortFW("4.93 CEX PS3HEN 3.5.0"); got != "4.93 HEN" {
+		t.Errorf("shortFW(HEN) = %q", got)
+	}
+	if got := shortFW("4.90 CEX"); got != "4.90 CEX" {
+		t.Errorf("shortFW(non-HEN) = %q, want the region kept", got)
+	}
+	if got := shortFW("4.90"); got != "4.90" {
+		t.Errorf("shortFW(bare) = %q", got)
+	}
+}
+
+// --- pure helpers ---
+
+func TestSparkAndTrendEdges(t *testing.T) {
+	// a descending series exercises the low-water branch
+	desc := make([]int, 60)
+	for i := range desc {
+		desc[i] = 80 - i/2
+	}
+	if got := spark(desc, 8, 10); got == "" {
+		t.Error("a descending series drew nothing")
+	}
+	if d := trend(desc); d >= 0 {
+		t.Errorf("trend of a falling series = %d, want negative", d)
+	}
+	// nothing valid to compare against
+	gaps := make([]int, 60)
+	for i := range gaps {
+		gaps[i] = unknown
+	}
+	if d := trend(gaps); d != 0 {
+		t.Errorf("trend of gaps = %d, want 0", d)
+	}
+	// a series shorter than the warm-up shows no trend at all
+	if d := trend([]int{80, 40}); d != 0 {
+		t.Errorf("trend before warm-up = %d, want 0", d)
+	}
+	if _, ok := firstValidFrom([]int{unknown, unknown}, 0); ok {
+		t.Error("firstValidFrom found a value among gaps")
+	}
+	if v, ok := firstValidFrom([]int{unknown, 42}, 0); !ok || v != 42 {
+		t.Errorf("firstValidFrom = %d, %v", v, ok)
+	}
+}
+
+func TestThermalGeometryEdges(t *testing.T) {
+	m := liveModel(t, 120)
+
+	// a rune with no glyph is skipped rather than drawn as tofu
+	if got := bigText("7Z4", lipgloss.NewStyle()); len(got) != digitH {
+		t.Errorf("bigText height = %d", len(got))
+	}
+	if bigTextWidth("") != 0 {
+		t.Error("empty text claimed width")
+	}
+	// too narrow for the gutter
+	if plotRows(8, 6, nil, plotLine{[]int{60, 61}, cpuSt}) != nil {
+		t.Error("drew a plot narrower than its gutter")
+	}
+	// a gridline outside the data range is dropped, not clamped onto an edge
+	plotRows(6, 60, []int{5, 500}, plotLine{[]int{60, 61, 62}, cpuSt})
+	// a descending series, for the low-water branch
+	plotRange(nil, plotLine{[]int{80, 70, 60}, cpuSt})
+
+	// the dynamic-mode target joins the gridlines
+	m.st.MaxTemp = 86
+	found := false
+	for _, mk := range m.plotMarks() {
+		if mk == 86 {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("the fan target isn't drawn as a gridline")
+	}
+
+	// the readouts collapse their gaps as the frame tightens. Below the widths
+	// thermalView actually calls them at they simply return their natural size
+	// — the screen clips — so the contract is checked where it applies.
+	for _, w := range []int{60, 80, 120, 200} {
+		for _, line := range m.bigReadouts(w) {
+			if lipgloss.Width(line) > w {
+				t.Errorf("readout at width %d is %d cols", w, lipgloss.Width(line))
+			}
+		}
+		if got := lipgloss.Width(m.plotCaption(w)); got > w+1 {
+			t.Errorf("caption at width %d is %d cols", w, got)
+		}
+		for _, line := range m.fanRow(w) {
+			if lipgloss.Width(line) > w+1 {
+				t.Errorf("fan row at width %d is %d cols", w, lipgloss.Width(line))
+			}
+		}
+	}
+	// narrower than anything real: must not panic on a negative pad
+	m.bigReadouts(20)
+	m.plotCaption(10)
+	m.fanRow(10)
+}
+
+// --- io edges ---
+
+func TestHistoryAddFailurePaths(t *testing.T) {
+	dir := t.TempDir()
+	// the log path is a directory: MkdirAll succeeds, OpenFile can't
+	asDir := filepath.Join(dir, "history.ndjson")
+	if err := os.Mkdir(asDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h := &history{path: asDir, stats: map[string]gameStat{}, firstHDD: unknown, lastHDD: unknown}
+	if err := h.add(sessionRec{ID: "MOCK1", Title: "Game", Secs: 60, End: time.Now()}); err == nil {
+		t.Error("appending to a directory reported success")
+	}
+	if _, ok := h.stats["MOCK1"]; ok {
+		t.Error("a record that never landed was folded into the totals")
+	}
+}
+
+func TestLoadHistoryOpenFailure(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.Mkdir(filepath.Join(dir, "history.ndjson"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h, err := loadHistory(dir)
+	if err == nil {
+		t.Error("an unreadable history reported success")
+	}
+	if h == nil || h.stats == nil {
+		t.Error("loadHistory must always return a usable history")
+	}
+	// runStats says so on stderr and still prints the empty-history line
+	if out := captureStdout(t, func() { runStats(dir) }); !strings.Contains(out, "no play history") {
+		t.Errorf("runStats over a broken log printed:\n%s", out)
+	}
+}
+
+// Equal totals must not shuffle between runs, or the leaderboard reorders
+// itself every time you look at it.
+func TestRunStatsTieBreaksByName(t *testing.T) {
+	dir := t.TempDir()
+	h := mustLoad(t, dir)
+	now := time.Now()
+	for _, title := range []string{"Zulu", "Alpha", "Mike"} {
+		if err := h.add(sessionRec{ID: title, Title: title, Started: now, End: now, Secs: 600}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	first := captureStdout(t, func() { runStats(dir) })
+	for i := 0; i < 5; i++ {
+		if got := captureStdout(t, func() { runStats(dir) }); got != first {
+			t.Fatal("equal totals reordered between runs")
+		}
+	}
+	if strings.Index(first, "Alpha") > strings.Index(first, "Mike") {
+		t.Error("equal totals aren't broken by name")
+	}
+}
+
+func TestWriteCacheRenameFailure(t *testing.T) {
+	dir := t.TempDir()
+	// the destination is a non-empty directory, so the rename can't succeed
+	dest := filepath.Join(dir, "x.png")
+	if err := os.Mkdir(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "occupant"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	writeCache(dest, tinyPNG(t))
+
+	// the temp file must not be left behind
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".cover-") {
+			t.Errorf("failed write left %q behind", e.Name())
+		}
+	}
+}
+
+func TestCheckPNGRejectsImplausibleDimensions(t *testing.T) {
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, coverMaxPx+1, 1))); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkPNG(buf.Bytes()); err == nil {
+		t.Errorf("a %dpx-wide cover was accepted", coverMaxPx+1)
+	}
+}
+
+// --- client edges ---
+
+func TestNormalizeHostRejectsAnEmptyHostname(t *testing.T) {
+	if got, err := normalizeHost(":80"); err == nil {
+		t.Errorf("a port with no host was accepted as %q", got)
+	}
+}
+
+func TestRedirectChainIsBounded(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// same origin every time, so only the hop count can stop it
+		http.Redirect(w, r, srv.URL+"/again", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	cli := NewClient(strings.TrimPrefix(srv.URL, "http://"))
+	if _, err := cli.get(context.Background(), "/start"); err == nil {
+		t.Error("an endless same-origin redirect loop was followed to completion")
+	}
+}
+
+func TestSanitizeDropsBidiControls(t *testing.T) {
+	for name, in := range map[string]string{
+		"LRM":     "a\u200eb",
+		"RLM":     "a\u200fb",
+		"isolate": "a\u2066b\u2069",
+	} {
+		if got := sanitize(in); got != "ab" {
+			t.Errorf("%s: sanitize(%q) = %q, want %q", name, in, got, "ab")
+		}
+	}
+}
+
+// A franchise where one entry has no title ID can't use the release-order hint:
+// the entry without an ID would sort against everything by title while its
+// siblings sorted by ID, which is how the cycle got in.
+func TestFranchiseWithAnIDlessMemberFallsBackToTitles(t *testing.T) {
+	games := []Game{
+		{Title: "Saga: Zulu", ID: "MOCK00001", Category: "hdd0/PS3ISO"},
+		{Title: "Saga: Alpha", ID: "MOCK00002", Category: "hdd0/PS3ISO"},
+		{Title: "Saga: Mike", ID: "", Category: "hdd0/PSXISO"}, // PSX entries carry none
+	}
+	keys := gameKeys(games)
+	if keys[0].id != "" || keys[1].id != "" {
+		t.Error("the ID hint stayed on for a franchise with an ID-less member")
+	}
+	if !keys[1].less(keys[0]) {
+		t.Error("fallback isn't title order")
+	}
+}
+
+// --- last-mile branches ---
+
+// The list keys have to survive an empty library: a filter that matches
+// nothing, or a console tab with no games on it.
+func TestActionKeysWithNothingSelected(t *testing.T) {
+	for _, k := range []string{"p", "enter"} {
+		m := liveModel(t, 120)
+		m.order = nil
+		if _, cmd := m.handleKey(key(k)); cmd != nil {
+			t.Errorf("%q acted with no game selected", k)
+		}
+		if m.confirm != nil {
+			t.Errorf("%q raised a prompt with no game selected", k)
+		}
+	}
+}
+
+// A history long enough to show a trend, but whose only reading is older than
+// the comparison window, has nothing to compare against.
+func TestTrendWithNothingInTheWindow(t *testing.T) {
+	vals := make([]int, 60)
+	for i := range vals {
+		vals[i] = unknown
+	}
+	vals[0] = 70 // the only sample, far older than trendGap
+	if d := trend(vals); d != 0 {
+		t.Errorf("trend = %d, want 0 — nothing recent enough to compare", d)
+	}
+	// and a delta below the noise floor is not a trend either
+	flat := make([]int, 60)
+	for i := range flat {
+		flat[i] = 60
+	}
+	flat[len(flat)-1] = 61
+	if d := trend(flat); d != 0 {
+		t.Errorf("trend = %d, want 0 — under the noise floor", d)
+	}
+}
+
+// The axis gutter grows with the label width, so a plot can be wide enough to
+// pass the first check and still have no room left to draw in.
+func TestPlotTooNarrowOnceTheGutterIsTaken(t *testing.T) {
+	vals := []int{100, 101, 102}
+	if got := plotRows(6, 12, nil, plotLine{vals, cpuSt}); got != nil {
+		t.Errorf("drew a %d-row plot with no room after the gutter", len(got))
+	}
+}
+
+func TestArtPanelShowsMountedDisc(t *testing.T) {
+	m := liveModel(t, 120)
+	m.artOn = true
+	m.games[0].Path = "/dev_hdd0/PS3ISO/SampleGame2.iso"
+	m.st.MountedISO = m.games[0].Path
+	m.online = true
+	if got := m.artPanel(); !strings.Contains(got, "mounted") {
+		t.Errorf("art panel doesn't mark the mounted disc:\n%s", got)
+	}
+}
+
+// A history file that exists but can't be opened is not "no history yet".
+func TestLoadHistoryPermissionDenied(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: permissions don't apply")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "history.ndjson")
+	if err := os.WriteFile(path, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(path, 0o644) })
+
+	h, err := loadHistory(dir)
+	if err == nil {
+		t.Error("an unreadable history read as an empty one")
+	}
+	if h == nil || h.stats == nil {
+		t.Error("loadHistory must always return a usable history")
+	}
+}

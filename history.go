@@ -8,6 +8,14 @@ package main
 // restarted mid-game. That is what removes the need for an open-session
 // sidecar file to survive a crash.
 //
+// The catch that costs, and what fixes it: PlayTime is CUMULATIVE for the whole
+// game process, so quitting ps3top mid-game writes the total so far, and the
+// next run writes the total again when the game finally ends. Both records
+// describe one session. They're recognised as one by their derived START time
+// (End − Secs), which is stable across restarts, and merged on load — keeping
+// the longest reading and counting it once. Derived, not stored, so it also
+// repairs records written before the field existed.
+//
 // A session that both starts and ends while ps3top isn't running is simply
 // never seen. That's inherent to polling and not worth chasing.
 
@@ -30,6 +38,7 @@ import (
 type sessionRec struct {
 	ID        string    `json:"id,omitempty"`
 	Title     string    `json:"title"`
+	Started   time.Time `json:"started,omitempty"` // session identity — see recStart
 	End       time.Time `json:"end"`
 	Secs      int       `json:"secs"`
 	PeakCPU   int       `json:"peak_cpu,omitempty"`
@@ -46,6 +55,11 @@ type gameStat struct {
 	Sessions int
 	Last     time.Time
 	PeakCPU  int
+
+	// the most recent record folded for this game, so the next one can be
+	// recognised as another reading of the same session rather than a new one
+	lastStart time.Time
+	lastSecs  int
 }
 
 type history struct {
@@ -82,8 +96,12 @@ func dataDir() (string, error) {
 }
 
 // loadHistory reads the log and folds it into per-game totals. A missing file
-// is the normal first-run case, not an error.
-func loadHistory(dir string) *history {
+// is the normal first-run case, not an error — but a file that exists and
+// can't be read is, and it used to be indistinguishable: a permissions problem
+// or a truncated line read as "no history yet", which is the one answer that
+// looks the same as the data being gone. Always returns a usable history, so
+// callers can warn and carry on.
+func loadHistory(dir string) (*history, error) {
 	h := &history{
 		path:     filepath.Join(dir, "history.ndjson"),
 		stats:    map[string]gameStat{},
@@ -92,28 +110,77 @@ func loadHistory(dir string) *history {
 	}
 	f, err := os.Open(h.path)
 	if err != nil {
-		return h
+		if os.IsNotExist(err) {
+			return h, nil
+		}
+		return h, err
 	}
 	defer f.Close()
 
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	lines := 0
 	for sc.Scan() {
+		lines++
 		var r sessionRec
 		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
-			continue // skip junk rather than lose the whole file
+			continue // skip junk rather than lose the whole file — deliberate
 		}
 		h.fold(r)
 	}
-	return h
+	// a line past the 1 MiB cap, or a read error, stops the scan early and
+	// silently truncates the history unless it's reported
+	if err := sc.Err(); err != nil {
+		return h, fmt.Errorf("%s: %w (stopped after %d lines)", h.path, err, lines)
+	}
+	return h, nil
+}
+
+// timeNow is a seam for tests. Session identity depends on the wall clock and
+// webMAN's play counter advancing together, which a test finishing in
+// microseconds cannot otherwise reproduce.
+var timeNow = time.Now
+
+// mergeWindow is how close two records' start times must be to be readings of
+// one session. Wide enough to absorb poll lag at both ends (the flush happens
+// up to an interval after the last sample), narrow enough that quitting a game
+// and starting it again still reads as two sessions — that only collides for a
+// session shorter than the window, where the miscount is a rounding error.
+const mergeWindow = 5 * time.Minute
+
+// recStart is when the session began. Records written before the field existed
+// don't carry it, but it's derivable from what they do carry — which is what
+// makes the double-count repair retroactive over an existing log.
+func recStart(r sessionRec) time.Time {
+	if !r.Started.IsZero() {
+		return r.Started
+	}
+	if r.End.IsZero() {
+		return time.Time{}
+	}
+	return r.End.Add(-time.Duration(r.Secs) * time.Second)
 }
 
 func (h *history) fold(r sessionRec) {
 	k := statKey(r.ID, r.Title)
 	s := h.stats[k]
 	s.Title, s.ID = r.Title, r.ID // newest record wins the display name
-	s.Secs += r.Secs
-	s.Sessions++
+
+	// Secs is webMAN's cumulative PlayTime, so two records of one session each
+	// carry the whole total rather than a slice of it — summing them counts the
+	// session twice (and once more per restart). Same start ⇒ same session:
+	// take the longest reading, count it once.
+	start := recStart(r)
+	if !start.IsZero() && !s.lastStart.IsZero() && absDur(start.Sub(s.lastStart)) <= mergeWindow {
+		if r.Secs > s.lastSecs {
+			s.Secs += r.Secs - s.lastSecs
+			s.lastSecs = r.Secs
+		}
+	} else {
+		s.Secs += r.Secs
+		s.Sessions++
+		s.lastStart, s.lastSecs = start, r.Secs
+	}
 	if r.End.After(s.Last) {
 		s.Last = r.End
 	}
@@ -140,8 +207,17 @@ func (h *history) stat(g Game) (gameStat, bool) {
 
 // add appends a record and folds it in, so the running TUI reflects the
 // session that just ended without re-reading the file.
+//
+// Order matters: the fold happens only after the append has landed. Folding
+// first meant a failed write (full disk, unwritable data dir) left the totals
+// on screen counting a session that isn't on disk — and since the caller
+// closed the open session either way, it was gone for good and the numbers
+// silently corrected themselves on the next restart.
 func (h *history) add(r sessionRec) error {
-	h.fold(r)
+	line, err := json.Marshal(r)
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(h.path), 0o755); err != nil {
 		return err
 	}
@@ -149,13 +225,22 @@ func (h *history) add(r sessionRec) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
-	line, err := json.Marshal(r)
-	if err != nil {
+	if _, err := f.Write(append(line, '\n')); err != nil {
+		f.Close()
 		return err
 	}
-	_, err = f.Write(append(line, '\n'))
-	return err
+	if err := f.Close(); err != nil {
+		return err
+	}
+	h.fold(r)
+	return nil
+}
+
+func absDur(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
 }
 
 // --- formatting ---
@@ -197,7 +282,10 @@ func fmtAgo(t time.Time) string {
 // --- ps3top --stats ---
 
 func runStats(dir string) {
-	h := loadHistory(dir)
+	h, err := loadHistory(dir)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ps3top: history:", err)
+	}
 	if len(h.stats) == 0 {
 		fmt.Println("ps3top — no play history yet")
 		fmt.Println("(recorded at", filepath.Join(dir, "history.ndjson")+")")

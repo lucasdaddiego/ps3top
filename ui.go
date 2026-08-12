@@ -87,6 +87,10 @@ type (
 type confirmAction struct {
 	label  string
 	danger bool
+	// unsure means the prompt is up because ps3top can't tell whether a game is
+	// running, not because it knows one is — the footer has to say so rather
+	// than name a title from a status read that may be minutes stale.
+	unsure bool
 	run    func(context.Context) error
 	// raw runs instead of run when set, as a thunk so the action is built at
 	// confirm time rather than when the prompt is raised — fan commands mutate
@@ -109,8 +113,17 @@ type model struct {
 	online     bool
 	haveStatus bool
 	lastErr    error
-	inFlight   bool
-	warnedBad  bool // the "markup changed" flash is raised once, not every poll
+	// Three flags rather than one because they gate different things. busy()
+	// is the union, and is what keeps a scheduled poll from racing a reply;
+	// but a plain status poll must not block a state-changing command, or a
+	// confirmed eject would get dropped for landing in the wrong 6 seconds.
+	inFlight   bool // status poll out
+	actBusy    bool // mount/play/eject/popup/power out
+	needStatus bool // a poll came due while busy; take it once the path is clear
+	// how many fields the last successful poll couldn't find, so the
+	// "markup changed" flash can fire on the way INTO a worse state rather
+	// than once per process — see the statusMsg handler
+	prevMissing int
 
 	hCPU, hRSX, hFan series
 
@@ -119,10 +132,9 @@ type model struct {
 	playColW   int  // width reserved for the per-row play total (0 = no history)
 	thermalOn  bool // `t` — full-body temperature screen with fan control
 
-	// fan presses are queued and sent one at a time — see queueFan
-	fanBusy     bool
-	fanQueue    int // net pending steps, + up / − down
-	fanModePend bool
+	// fan presses are queued and sent one at a time, in press order — see queueFan
+	fanBusy  bool
+	fanQueue []string // pending fanUp/fanDown/fanMode, oldest first
 
 	// open session, closed out when the game stops or ps3top quits. Length
 	// comes from webMAN's PlayTime, so it survives a mid-game restart.
@@ -222,34 +234,61 @@ func (m *model) fetchGames() tea.Cmd {
 // requests the console will still be working through a minute later.
 const fanQueueMax = 20
 
+// fanReady reports whether the fan controls know what they would be doing.
+// ↑↓ move the fan percentage in manual mode and the target temperature in
+// dynamic, and f is a one-way door out of SYSCON — none of that can be
+// labelled honestly, or confirmed, before a status has said which mode the
+// console is in. The keys used to work anyway from the very first frame.
+func (m *model) fanReady() bool {
+	return m.haveStatus && m.st.FanMode != ""
+}
+
 // queueFan records a press and starts draining if nothing is in flight. Fan
 // requests are serialized deliberately: webMAN's server has ~4 session slots,
 // and firing one GET per keypress turns a quick 24%→40% adjustment into a
 // pile-up that reads as an unresponsive UI.
-func (m *model) queueFan(step int, mode bool) tea.Cmd {
-	if mode {
-		m.fanModePend = true
-	} else {
-		m.fanQueue = clamp(m.fanQueue+step, -fanQueueMax, fanQueueMax)
+//
+// The queue is an ordered list, not a net counter plus a mode flag. Those
+// commands don't all mean the same thing — ?up moves the percentage in manual
+// mode and the target temperature in dynamic — and the old shape always sent a
+// queued ?mode FIRST, ahead of presses made before it. So: manual mode, press
+// up twice to cool the console, then press f. The mode change went out first,
+// and the two ups that were meant to raise the fan raised the temperature
+// ceiling instead. Cooling intent, inverted, on the screen whose whole job is
+// to not cook the console. Press order is now preserved exactly.
+func (m *model) queueFan(cmd string) tea.Cmd {
+	// an immediate reversal cancels instead of queueing both — leaning on ↑ and
+	// correcting with ↓ shouldn't cost two round trips. Tail only, so it can
+	// never reorder anything across a ?mode.
+	if n := len(m.fanQueue); n > 0 && m.fanQueue[n-1] == inverseFan(cmd) {
+		m.fanQueue = m.fanQueue[:n-1]
+		return m.drainFan()
 	}
+	if len(m.fanQueue) >= fanQueueMax {
+		return m.drainFan()
+	}
+	m.fanQueue = append(m.fanQueue, cmd)
 	return m.drainFan()
 }
 
+// inverseFan is the command that undoes cmd, or "" for one that can't be undone
+// (a mode change is a one-way cycle, never cancelled against a pending step).
+func inverseFan(cmd string) string {
+	switch cmd {
+	case fanUp:
+		return fanDown
+	case fanDown:
+		return fanUp
+	}
+	return ""
+}
+
 func (m *model) drainFan() tea.Cmd {
-	if m.fanBusy {
+	if m.fanBusy || len(m.fanQueue) == 0 {
 		return nil // the in-flight reply will drain the rest
 	}
-	cmd := ""
-	switch {
-	case m.fanModePend:
-		m.fanModePend, cmd = false, fanMode
-	case m.fanQueue > 0:
-		m.fanQueue, cmd = m.fanQueue-1, fanUp
-	case m.fanQueue < 0:
-		m.fanQueue, cmd = m.fanQueue+1, fanDown
-	default:
-		return nil
-	}
+	cmd := m.fanQueue[0]
+	m.fanQueue = m.fanQueue[1:]
 	m.fanBusy = true
 	cli, prevPct, prevMax, prevMode := m.cli, m.st.FanPct, m.st.MaxTemp, m.st.FanMode
 	return func() tea.Msg {
@@ -304,6 +343,47 @@ func doAction(label string, fn func(context.Context) error) tea.Cmd {
 		defer cancel()
 		return actionMsg{label, fn(ctx)}
 	}
+}
+
+// busy reports whether any request carrying console state is out. This is what
+// polling defers on: a status page fetched alongside a fan reply can arrive
+// after it and overwrite the newer reading with the older one.
+func (m *model) busy() bool { return m.inFlight || m.actBusy || m.fanBusy }
+
+// act runs a state-changing request. Every action path goes through here, and
+// only one runs at a time: webMAN answers on ~4 session slots with no ordering
+// guarantee, so two actions in flight land in whichever order it gets to them.
+//
+// A status poll in flight is deliberately NOT a reason to refuse — it carries
+// no state, and refusing on it would mean an eject the user had already
+// confirmed could vanish because a background poll happened to be mid-request.
+func (m *model) act(label string, fn func(context.Context) error) tea.Cmd {
+	if m.actBusy || m.fanBusy {
+		m.flash = "busy — waiting for the last command"
+		return m.clearFlashLater()
+	}
+	m.actBusy = true
+	return doAction(label, fn)
+}
+
+// refreshNow polls if the path is clear, and otherwise records that a poll is
+// owed so catchUp can take it later.
+func (m *model) refreshNow() tea.Cmd {
+	if m.busy() {
+		m.needStatus = true
+		return nil
+	}
+	return m.fetchStatus()
+}
+
+// catchUp takes the poll that was skipped while the console was busy, once
+// nothing is in flight and the fan queue has drained.
+func (m *model) catchUp() tea.Cmd {
+	if !m.needStatus || m.busy() || len(m.fanQueue) > 0 {
+		return nil
+	}
+	m.needStatus = false
+	return m.fetchStatus()
 }
 
 func (m *model) ensureCover() tea.Cmd {
@@ -362,6 +442,29 @@ func (m *model) trackSession(st Status) bool {
 	flashed := false
 	if m.sesOn && statKey(m.sesID, m.sesTitle) != statKey(st.GameID, st.GameTitle) {
 		flashed = m.flushSession() // straight from one game into another
+		if m.sesOn {
+			// the append failed and the old session is still open — folding the
+			// new game's counter into it would corrupt both
+			return flashed
+		}
+	}
+	// PlayTime that didn't parse reads as 0. That's absence of information, not
+	// a session that restarted: letting it through would zero the counter and
+	// throw the session away if no good poll followed.
+	if st.PlaySecs <= 0 {
+		return flashed
+	}
+	// The counter only climbs within one run of a game, so a drop means the game
+	// stopped and started again between two polls — a new session under a title
+	// the check above can't distinguish. Without this the earlier session was
+	// silently overwritten by the shorter reading and never recorded.
+	if m.sesOn && st.PlaySecs < m.sesSecs {
+		if m.flushSession() {
+			flashed = true
+		}
+		if m.sesOn {
+			return flashed
+		}
 	}
 	if !m.sesOn {
 		m.sesOn = true
@@ -388,19 +491,36 @@ func (m *model) flushSession() bool {
 	}
 	secs, title, id := m.sesSecs, m.sesTitle, m.sesID
 	peakC, peakR := m.sesPeakC, m.sesPeakR
-	m.sesOn = false
 	if secs <= 0 || title == "" {
+		m.sesOn = false
 		return false // nothing worth recording (or PlayTime didn't parse)
 	}
 
-	rec := sessionRec{ID: id, Title: title, End: time.Now(), Secs: secs, PeakCPU: peakC, PeakRSX: peakR}
+	// Started is what makes this record identifiable as one session across ps3top
+	// restarts: Secs is webMAN's cumulative PlayTime, so quitting mid-game and
+	// coming back writes the total twice, and only a stable start time lets the
+	// two be recognised as the same play rather than added together.
+	now := timeNow()
+	rec := sessionRec{
+		ID:      id,
+		Title:   title,
+		Started: now.Add(-time.Duration(secs) * time.Second),
+		End:     now,
+		Secs:    secs,
+		PeakCPU: peakC,
+		PeakRSX: peakR,
+	}
 	if m.st.HDDFreeGB != unknown {
 		rec.HDDFreeGB = m.st.HDDFreeGB
 	}
 	if err := m.hist.add(rec); err != nil {
+		// the session stays open so the next poll retries. Closing it here meant
+		// a failed write lost the record for good, while the totals on screen
+		// still counted it until restart.
 		m.flash = "history: " + err.Error()
 		return true
 	}
+	m.sesOn = false
 	m.recalcPlayCol()
 	m.flash = fmt.Sprintf("%s — %s", title, fmtDur(secs))
 	if peakC > 0 {
@@ -553,14 +673,19 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !m.online && next < offlineRetry {
 			next = offlineRetry
 		}
+		// a fan command or action mid-flight will answer with fresher state than
+		// this poll would, and overlapping them lets an older status page
+		// overwrite a newer fan reading — so defer rather than race
 		var cmd tea.Cmd
-		if !m.inFlight {
+		if m.busy() {
+			m.needStatus = true
+		} else {
 			cmd = m.fetchStatus()
 		}
 		return m, tea.Batch(cmd, m.tick(next))
 
 	case statusMsg:
-		m.inFlight = false
+		m.inFlight, m.needStatus = false, false
 		if msg.err != nil {
 			m.online = false
 			m.lastErr = msg.err
@@ -579,11 +704,21 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.alarming = nowAlarming
 
 		flashed := m.trackSession(msg.st)
-		if n := msg.st.missing(); n > 0 && !m.warnedBad {
-			m.warnedBad = true
+		// Warn on the way INTO a worse state, not once per process. The
+		// missing fields stay visible as em dashes for as long as they're
+		// missing, so this flash is the explanation, not the signal — but a
+		// single latched bool spent it on the first transient blip and then
+		// said nothing when the markup genuinely broke hours later. Comparing
+		// against the previous count also keeps a steady-state break quiet
+		// instead of flashing every 15 seconds.
+		if n := msg.st.missing(); n > m.prevMissing {
 			m.flash = fmt.Sprintf("status page: %d of %d fields not found — webMAN markup may have changed", n, statusFields)
 			flashed = true
 		}
+		// deliberately not updated on the error path above: an outage isn't a
+		// markup change, and recovering from one into the same degraded state
+		// shouldn't re-warn
+		m.prevMissing = msg.st.missing()
 		if flashed {
 			return m, m.clearFlashLater()
 		}
@@ -631,16 +766,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.ensureCover()
 
 	case actionMsg:
+		m.actBusy = false
 		if msg.err != nil {
 			m.flash = msg.label + ": " + msg.err.Error()
 			return m, m.clearFlashLater()
 		}
 		m.flash = msg.label + " ✓"
-		var st tea.Cmd
-		if !m.inFlight {
-			st = m.fetchStatus()
-		}
-		return m, tea.Batch(st, m.clearFlashLater())
+		return m, tea.Batch(m.refreshNow(), m.clearFlashLater())
 
 	case coverMsg:
 		m.coverBusy[msg.icon] = false
@@ -652,16 +784,21 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case fanMsg:
 		m.fanBusy = false
 		if msg.err != nil {
-			m.fanQueue, m.fanModePend = 0, false // don't keep hammering a console that just failed
+			m.fanQueue = nil // don't keep hammering a console that just failed
 			m.flash = "fan: " + msg.err.Error()
-			return m, m.clearFlashLater()
+			return m, tea.Batch(m.clearFlashLater(), m.catchUp())
 		}
 		// the endpoint answered with the whole status page, so adopt it as the
-		// current reading — no follow-up poll needed
+		// current reading — no follow-up poll needed for the display. It
+		// deliberately doesn't push samples or fold the play session: that's
+		// what the deferred poll behind catchUp is for, so a burst of fan
+		// presses can't over-sample the history rings.
 		m.online, m.haveStatus, m.lastErr = true, true, nil
 		m.st = msg.st
 		m.flash = fanReport(msg)
-		return m, tea.Batch(m.clearFlashLater(), m.drainFan())
+		// drainFan first: it claims fanBusy for the next command, so catchUp
+		// correctly sees the console as still busy and waits its turn
+		return m, tea.Batch(m.clearFlashLater(), m.drainFan(), m.catchUp())
 
 	case clearFlashMsg:
 		if msg.gen == m.flashGen {
@@ -691,7 +828,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if c.raw != nil {
 				return m, c.raw()
 			}
-			return m, doAction(c.label, c.run)
+			return m, m.act(c.label, c.run)
 		}
 		m.flash = "cancelled"
 		return m, m.clearFlashLater()
@@ -710,7 +847,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 			cli := m.cli
-			return m, doAction("popup", func(ctx context.Context) error { return cli.Popup(ctx, text) })
+			return m, m.act("popup", func(ctx context.Context) error { return cli.Popup(ctx, text) })
 		}
 		var cmd tea.Cmd
 		m.popupInput, cmd = m.popupInput.Update(msg)
@@ -757,10 +894,13 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// arrows drive the fan here: there's no list to navigate on this
 		// screen, so they're free and they're the obvious thing to reach for
 		case "up", "k", "+", "=":
-			return m, m.queueFan(+1, false)
+			return m, m.fanKey(fanUp)
 		case "down", "j", "-", "_":
-			return m, m.queueFan(-1, false)
+			return m, m.fanKey(fanDown)
 		case "f":
+			if !m.fanReady() {
+				return m, m.fanUnready()
+			}
 			// ?mode only cycles webMAN's own strategies (Lowest/Manual/Auto)
 			// and every one of them re-enables webMAN fan control, so this is
 			// a one-way door out of SYSCON: getting back means unticking
@@ -769,13 +909,13 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if strings.EqualFold(m.st.FanMode, "SYSCON") {
 				m.confirm = &confirmAction{
 					label: "leave SYSCON? only webMAN's setup page can switch back",
-					raw:   func() tea.Cmd { return m.queueFan(0, true) },
+					raw:   func() tea.Cmd { return m.queueFan(fanMode) },
 				}
 				return m, nil
 			}
-			return m, m.queueFan(0, true)
+			return m, m.queueFan(fanMode)
 		case "r":
-			if !m.inFlight {
+			if !m.busy() {
 				return m, m.fetchStatus()
 			}
 		}
@@ -830,7 +970,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case "r":
-		if !m.inFlight {
+		if !m.busy() {
 			return m, m.fetchStatus()
 		}
 		return m, nil
@@ -859,23 +999,50 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if !ok {
 			return m, nil
 		}
+		// launch is guarded too: the game you're about to (re)launch is very
+		// often the one already running — same title, already mounted, cursor
+		// sitting on its row — and /play.ps3 doesn't ask either
 		if m.mounted(g) {
-			return m, doAction("launch "+g.Title, func(ctx context.Context) error { return cli.Launch(ctx) })
+			return m.guarded("launch "+g.Title, func(ctx context.Context) error { return cli.Launch(ctx) })
 		}
 		return m.guarded("mount "+g.Title, func(ctx context.Context) error { return cli.Mount(ctx, g) })
 	}
 	return m, nil
 }
 
+// fanKey applies a fan step, or explains why it can't.
+func (m *model) fanKey(cmd string) tea.Cmd {
+	if !m.fanReady() {
+		return m.fanUnready()
+	}
+	return m.queueFan(cmd)
+}
+
+func (m *model) fanUnready() tea.Cmd {
+	m.flash = "fan: waiting for a status read — mode unknown"
+	return m.clearFlashLater()
+}
+
 // guarded runs immediately on XMB, but demands a red confirm while in-game —
 // note /mount_ps3 bypasses webMAN's own in-game mount protection, so this
 // dialog is the only net.
+//
+// It confirms just as hard when it can't tell. Before the first status, or
+// after a failed poll, m.st is either empty or stale and "no game is running"
+// is a guess, not a reading. The old condition was `online && InGame`, which
+// meant the guard was strongest while telemetry was healthy and simply absent
+// the moment it wasn't — mount and eject fired immediately on a console that
+// might well have been mid-game.
 func (m *model) guarded(label string, fn func(context.Context) error) (tea.Model, tea.Cmd) {
-	if m.online && m.st.InGame {
+	switch {
+	case !m.haveStatus || !m.online:
+		m.confirm = &confirmAction{label: label, danger: true, unsure: true, run: fn}
+		return m, nil
+	case m.st.InGame:
 		m.confirm = &confirmAction{label: label, danger: true, run: fn}
 		return m, nil
 	}
-	return m, doAction(label, fn)
+	return m, m.act(label, fn)
 }
 
 func (m *model) mounted(g Game) bool {
@@ -1397,7 +1564,12 @@ func (m *model) artPanel() string {
 // footer is a single bookend line; modal states render inside the same rails.
 func (m *model) footer() string {
 	if m.confirm != nil {
-		if m.confirm.danger {
+		switch {
+		case m.confirm.unsure:
+			// don't name a title here: the reason for the prompt is that the
+			// last reading can't be trusted, and quoting it would imply it can
+			return m.bookend(dangerSt.Render(" ⚠ console state unknown — a game may be running · " + m.confirm.label + "? y/N "))
+		case m.confirm.danger:
 			warnGame := m.st.GameTitle
 			if warnGame == "" {
 				warnGame = "a game"
@@ -1416,7 +1588,10 @@ func (m *model) footer() string {
 		return m.bookend(warnSt.Render(m.flash))
 	}
 	if m.thermalOn {
-		return m.bookend(dimSt.Render("↑↓ (or +/−) fan speed · f fan mode · r refresh · esc back"))
+		// through fanHint, not a fixed label: ↑↓ move the target temperature in
+		// dynamic mode, and the footer used to insist they were "fan speed"
+		// while the fan row two lines above correctly said "target"
+		return m.bookend(dimSt.Render(m.fanHint() + " (or +/−) · " + m.fanModeHint() + " · r refresh · esc back"))
 	}
 	// Widest form that fits: a clipped keybar loses whichever keys happen to
 	// sit at the end, rather than the ones you're least likely to need.

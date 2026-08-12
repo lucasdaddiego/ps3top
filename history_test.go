@@ -1,16 +1,26 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 )
 
+func mustLoad(t *testing.T, dir string) *history {
+	t.Helper()
+	h, err := loadHistory(dir)
+	if err != nil {
+		t.Fatalf("loadHistory(%s): %v", dir, err)
+	}
+	return h
+}
+
 func testModel(t *testing.T, dir string, h *history) *model {
 	t.Helper()
 	if h == nil {
-		h = loadHistory(dir)
+		h = mustLoad(t, dir)
 	}
 	return newModel(nil, "test", time.Second, 80, false, dir, h)
 }
@@ -31,7 +41,7 @@ func TestSessionLengthComesFromPlayTime(t *testing.T) {
 	m.trackSession(inGame(3660, 75, 71))
 	m.trackSession(Status{InGame: false, HDDFreeGB: 123.4})
 
-	h := loadHistory(dir)
+	h := mustLoad(t, dir)
 	s, ok := h.stats["MOCK30982"]
 	if !ok {
 		t.Fatal("no record written")
@@ -60,7 +70,7 @@ func TestGameSwitchClosesPreviousSession(t *testing.T) {
 	m.trackSession(Status{InGame: true, GameID: "MOCK00002", GameTitle: "Second", PlaySecs: 120})
 	m.trackSession(Status{InGame: false})
 
-	h := loadHistory(dir)
+	h := mustLoad(t, dir)
 	if len(h.stats) != 2 {
 		t.Fatalf("games recorded = %d, want 2", len(h.stats))
 	}
@@ -97,7 +107,7 @@ func TestPeaksIgnoreUnknownTemps(t *testing.T) {
 	m.trackSession(Status{InGame: true, GameID: "MOCK1", GameTitle: "Mock", PlaySecs: 120, CPUTemp: unknown, RSXTemp: unknown})
 	m.trackSession(Status{InGame: false})
 
-	if got := loadHistory(dir).stats["MOCK1"].PeakCPU; got != 68 {
+	if got := mustLoad(t, dir).stats["MOCK1"].PeakCPU; got != 68 {
 		t.Errorf("PeakCPU = %d, want 68 — unknown must not overwrite a real peak", got)
 	}
 }
@@ -119,7 +129,7 @@ func TestStatKeyFallsBackToTitle(t *testing.T) {
 
 func TestHistoryRoundTripAndJunkTolerance(t *testing.T) {
 	dir := t.TempDir()
-	h := loadHistory(dir)
+	h := mustLoad(t, dir)
 	now := time.Now()
 
 	for i := 0; i < 3; i++ {
@@ -137,7 +147,7 @@ func TestHistoryRoundTripAndJunkTolerance(t *testing.T) {
 	f.WriteString("{\"id\":\"MOCK2\",\"tit\n")
 	f.Close()
 
-	got := loadHistory(dir)
+	got := mustLoad(t, dir)
 	s, ok := got.stats["MOCK1"]
 	if !ok {
 		t.Fatal("records lost")
@@ -162,7 +172,7 @@ func TestHistoryRoundTripAndJunkTolerance(t *testing.T) {
 }
 
 func TestLoadHistoryMissingFile(t *testing.T) {
-	h := loadHistory(t.TempDir())
+	h := mustLoad(t, t.TempDir())
 	if len(h.stats) != 0 {
 		t.Errorf("stats = %v, want empty", h.stats)
 	}
@@ -175,7 +185,7 @@ func TestLoadHistoryMissingFile(t *testing.T) {
 // float above an alphabetical wall of everything else.
 func TestRecencySort(t *testing.T) {
 	dir := t.TempDir()
-	h := loadHistory(dir)
+	h := mustLoad(t, dir)
 	now := time.Now()
 	h.fold(sessionRec{ID: "MOCK2", Title: "Beta", End: now.Add(-time.Hour), Secs: 100})
 	h.fold(sessionRec{ID: "MOCK3", Title: "Gamma", End: now.Add(-24 * time.Hour), Secs: 100})
@@ -217,7 +227,7 @@ func TestRecencySort(t *testing.T) {
 // one go".
 func TestReorderKeepsCursorOnSameGame(t *testing.T) {
 	dir := t.TempDir()
-	h := loadHistory(dir)
+	h := mustLoad(t, dir)
 	h.fold(sessionRec{ID: "MOCK3", Title: "Gamma", End: time.Now(), Secs: 100})
 
 	m := testModel(t, dir, h)
@@ -243,7 +253,7 @@ func TestReorderKeepsCursorOnSameGame(t *testing.T) {
 
 func TestPlayColWidthIsLibraryWide(t *testing.T) {
 	dir := t.TempDir()
-	h := loadHistory(dir)
+	h := mustLoad(t, dir)
 	h.fold(sessionRec{ID: "MOCK1", Title: "Short", End: time.Now(), Secs: 90})           // "1m"
 	h.fold(sessionRec{ID: "MOCK2", Title: "Long", End: time.Now(), Secs: 3600*38 + 720}) // "38h12m"
 
@@ -304,6 +314,187 @@ func TestFmtAgo(t *testing.T) {
 		if got := fmtAgo(c.t); got != c.want {
 			t.Errorf("fmtAgo(%v) = %q, want %q", c.t, got, c.want)
 		}
+	}
+}
+
+// --- session identity ---
+
+// webMAN's PlayTime is CUMULATIVE for the whole game process, so a record
+// written mid-game already contains the total so far. Quitting ps3top during a
+// game wrote that total; restarting and playing on wrote the (larger) total
+// again when the game finally ended. Both describe ONE session, and the log
+// added them together: a 90-minute play reported as 150 minutes across two
+// sessions, worse with every restart. README claimed this case was correct.
+func TestRestartMidGameDoesNotDoubleCount(t *testing.T) {
+	dir := t.TempDir()
+	inGame := func(secs int) Status {
+		return Status{InGame: true, GameID: "MOCK30982", GameTitle: "Sample Game™ 2", PlaySecs: secs}
+	}
+	// the clock has to move with the play counter — that's the whole basis on
+	// which two records are recognised as one session
+	base := time.Now()
+	defer func(f func() time.Time) { timeNow = f }(timeNow)
+	timeNow = func() time.Time { return base }
+
+	// process A joins an hour in, then the user quits ps3top with the game running
+	a := testModel(t, dir, nil)
+	a.trackSession(inGame(3600))
+	a.flushSession() // what q / ctrl-c does
+
+	// thirty more minutes of play, under a new ps3top process
+	timeNow = func() time.Time { return base.Add(30 * time.Minute) }
+	b := testModel(t, dir, nil)
+	b.trackSession(inGame(5400))
+	b.trackSession(Status{InGame: false})
+
+	h := mustLoad(t, dir)
+	s := h.stats["MOCK30982"]
+	if s.Secs != 5400 {
+		t.Errorf("Secs = %d, want 5400 — one 90-minute session, not 3600+5400", s.Secs)
+	}
+	if s.Sessions != 1 {
+		t.Errorf("Sessions = %d, want 1", s.Sessions)
+	}
+}
+
+// Same repair, applied to a log written before the Started field existed: the
+// start time is derivable from End − Secs, so history recorded by an older
+// ps3top is corrected on load rather than staying wrong forever.
+func TestLegacyRecordsAreDeduplicatedOnLoad(t *testing.T) {
+	dir := t.TempDir()
+	end := time.Now()
+	// exactly the two lines the old code would have written, no Started field
+	lines := `{"id":"MOCK1","title":"Game","end":"` + end.Add(-30*time.Minute).Format(time.RFC3339Nano) + `","secs":3600}
+{"id":"MOCK1","title":"Game","end":"` + end.Format(time.RFC3339Nano) + `","secs":5400}
+`
+	if err := os.WriteFile(filepath.Join(dir, "history.ndjson"), []byte(lines), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s := mustLoad(t, dir).stats["MOCK1"]
+	if s.Secs != 5400 || s.Sessions != 1 {
+		t.Errorf("legacy log folded to %ds over %d sessions, want 5400s over 1", s.Secs, s.Sessions)
+	}
+}
+
+// Two genuinely separate plays of the same game must still count twice — the
+// repair above must not collapse a whole evening into one record.
+func TestSeparateSessionsStillCountSeparately(t *testing.T) {
+	dir := t.TempDir()
+	h := mustLoad(t, dir)
+	now := time.Now()
+	h.fold(sessionRec{ID: "MOCK1", Title: "Game", Started: now.Add(-5 * time.Hour), End: now.Add(-4 * time.Hour), Secs: 3600})
+	h.fold(sessionRec{ID: "MOCK1", Title: "Game", Started: now.Add(-2 * time.Hour), End: now, Secs: 7200})
+
+	s := h.stats["MOCK1"]
+	if s.Secs != 10800 || s.Sessions != 2 {
+		t.Errorf("two evenings folded to %ds over %d sessions, want 10800s over 2", s.Secs, s.Sessions)
+	}
+}
+
+// If a game stops and restarts between two polls the title never changes, but
+// webMAN's counter drops back. That drop was written straight over the longer
+// reading, so the first session simply vanished.
+func TestCounterResetStartsANewSession(t *testing.T) {
+	dir := t.TempDir()
+	m := testModel(t, dir, nil)
+	inGame := func(secs int) Status {
+		return Status{InGame: true, GameID: "MOCK1", GameTitle: "Game", PlaySecs: secs}
+	}
+	m.trackSession(inGame(3600)) // an hour in
+	m.trackSession(inGame(120))  // quit and relaunched between polls
+	m.trackSession(inGame(300))
+	m.trackSession(Status{InGame: false})
+
+	s := mustLoad(t, dir).stats["MOCK1"]
+	if s.Sessions != 2 {
+		t.Errorf("Sessions = %d, want 2 — the counter reset ended the first play", s.Sessions)
+	}
+	if s.Secs != 3900 {
+		t.Errorf("Secs = %d, want 3900 (3600 + 300)", s.Secs)
+	}
+}
+
+// An unparseable PlayTime reads as 0. That's missing information, not a session
+// that restarted: it must not zero the counter (which would discard the session
+// if no good poll followed) nor look like a reset.
+func TestUnparseablePlayTimeIsIgnored(t *testing.T) {
+	dir := t.TempDir()
+	m := testModel(t, dir, nil)
+	m.trackSession(Status{InGame: true, GameID: "MOCK1", GameTitle: "Game", PlaySecs: 3600})
+	m.trackSession(Status{InGame: true, GameID: "MOCK1", GameTitle: "Game", PlaySecs: 0}) // PlayTime didn't match
+	if m.sesSecs != 3600 {
+		t.Errorf("sesSecs = %d, want the last good reading (3600)", m.sesSecs)
+	}
+	m.trackSession(Status{InGame: false})
+
+	s := mustLoad(t, dir).stats["MOCK1"]
+	if s.Secs != 3600 || s.Sessions != 1 {
+		t.Errorf("got %ds over %d sessions, want 3600s over 1", s.Secs, s.Sessions)
+	}
+}
+
+// The totals on screen used to include a record that never reached the disk:
+// fold ran before the write, and the open session was closed either way, so a
+// failed append lost the session AND left the UI showing it until restart.
+func TestFailedAppendKeepsMemoryAndSessionIntact(t *testing.T) {
+	dir := t.TempDir()
+	// a plain file where the history DIRECTORY should be, so MkdirAll fails
+	if err := os.WriteFile(filepath.Join(dir, "blocked"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h := &history{
+		path:     filepath.Join(dir, "blocked", "sub", "history.ndjson"),
+		stats:    map[string]gameStat{},
+		firstHDD: unknown, lastHDD: unknown,
+	}
+	m := testModel(t, dir, h)
+	m.trackSession(Status{InGame: true, GameID: "MOCK1", GameTitle: "Game", PlaySecs: 3600})
+
+	if flashed := m.flushSession(); !flashed {
+		t.Error("write failure wasn't reported")
+	}
+	if _, ok := m.hist.stats["MOCK1"]; ok {
+		t.Error("in-memory totals count a session that isn't on disk")
+	}
+	if !m.sesOn {
+		t.Error("session was thrown away instead of held for a retry")
+	}
+
+	// and a later poll can still record it once the path works again
+	m.hist.path = filepath.Join(dir, "history.ndjson")
+	m.trackSession(Status{InGame: false})
+	if s := mustLoad(t, dir).stats["MOCK1"]; s.Secs != 3600 {
+		t.Errorf("retry recorded %ds, want 3600", s.Secs)
+	}
+}
+
+// --- load errors ---
+
+// A history file that exists but can't be read used to be indistinguishable
+// from having no history at all — the one answer that looks exactly like the
+// data being gone.
+func TestLoadHistoryReportsRealFailures(t *testing.T) {
+	dir := t.TempDir()
+	if _, err := loadHistory(dir); err != nil {
+		t.Errorf("missing file should be the silent first-run case, got %v", err)
+	}
+
+	// a line past the scanner's 1 MiB cap stops the read partway through
+	long := append(bytes.Repeat([]byte("x"), 2<<20), '\n')
+	rec := []byte(`{"id":"MOCK1","title":"Game","secs":60,"end":"` + time.Now().Format(time.RFC3339Nano) + `"}` + "\n")
+	if err := os.WriteFile(filepath.Join(dir, "history.ndjson"), append(rec, long...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	h, err := loadHistory(dir)
+	if err == nil {
+		t.Error("truncated read reported as a complete history")
+	}
+	if h == nil || h.stats == nil {
+		t.Fatal("loadHistory must always return a usable history")
+	}
+	// what did parse is still there — the caller warns and carries on
+	if h.stats["MOCK1"].Secs != 60 {
+		t.Error("records read before the failure were discarded")
 	}
 }
 

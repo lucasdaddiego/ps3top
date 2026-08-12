@@ -157,7 +157,7 @@ func TestMissingMetricsRenderAsGaps(t *testing.T) {
 
 func TestRowsFitListWidth(t *testing.T) {
 	dir := t.TempDir()
-	h := loadHistory(dir)
+	h := mustLoad(t, dir)
 	h.fold(sessionRec{ID: "MOCK30982", Title: "Sample Game™ 2", End: time.Now(), Secs: 137520})
 
 	for _, w := range []int{80, 100, 160} {
@@ -184,7 +184,7 @@ func TestRowsFitListWidth(t *testing.T) {
 // punch a hole in it or run past the edge.
 func TestSelectedRowStillFillsWidth(t *testing.T) {
 	dir := t.TempDir()
-	h := loadHistory(dir)
+	h := mustLoad(t, dir)
 	h.fold(sessionRec{ID: "MOCK30982", Title: "Sample Game™ 2", End: time.Now(), Secs: 3600})
 
 	m := liveModel(t, 120)
@@ -233,3 +233,276 @@ func TestViewRendersInEveryState(t *testing.T) {
 type context_deadline struct{}
 
 func (context_deadline) Error() string { return "dial tcp: i/o timeout" }
+
+// --- action safety ---
+
+// Mount, eject and play can interrupt a running game and lose unsaved progress
+// — /mount_ps3 bypasses webMAN's own in-game protection, so the confirm dialog
+// is the only net there is. The guard used to be `online && InGame`, which
+// means it fired precisely when ps3top KNEW a game was running and stood aside
+// whenever it didn't: on the first frames before any status arrived, and after
+// any failed poll, when the last reading is stale and a game may well have
+// started since. Weakest exactly where certainty is absent.
+func TestGuardedActionsFailClosed(t *testing.T) {
+	cases := []struct {
+		name        string
+		setup       func(*model)
+		wantConfirm bool
+		wantUnsure  bool
+	}{
+		{
+			name:        "before the first status",
+			setup:       func(m *model) { m.haveStatus, m.online, m.st = false, false, Status{} },
+			wantConfirm: true, wantUnsure: true,
+		},
+		{
+			name:        "offline, last seen in game",
+			setup:       func(m *model) { m.online = false }, // liveModel's st is in-game
+			wantConfirm: true, wantUnsure: true,
+		},
+		{
+			name:        "offline, last seen on XMB",
+			setup:       func(m *model) { m.online, m.st.InGame = false, false },
+			wantConfirm: true, wantUnsure: true,
+		},
+		{
+			name:        "online, in game",
+			setup:       func(m *model) {},
+			wantConfirm: true, wantUnsure: false,
+		},
+		{
+			name:        "online, on XMB",
+			setup:       func(m *model) { m.st.InGame = false },
+			wantConfirm: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			for _, k := range []string{"u", "p", "enter"} {
+				m := liveModel(t, 120)
+				c.setup(m)
+				_, cmd := m.handleKey(key(k))
+
+				if c.wantConfirm {
+					if m.confirm == nil {
+						t.Fatalf("%q fired at the console with no confirmation", k)
+					}
+					if cmd != nil {
+						t.Errorf("%q dispatched a command as well as prompting", k)
+					}
+					if !m.confirm.danger {
+						t.Errorf("%q prompt isn't styled as dangerous", k)
+					}
+					if m.confirm.unsure != c.wantUnsure {
+						t.Errorf("%q unsure = %v, want %v", k, m.confirm.unsure, c.wantUnsure)
+					}
+				} else if m.confirm != nil {
+					t.Errorf("%q asked on a console known to be sitting on the XMB", k)
+				}
+			}
+		})
+	}
+}
+
+// The likeliest way to relaunch the game you're already playing: it's mounted,
+// the cursor is on its row, you press enter. That path went straight to
+// /play.ps3 with no prompt — while the guard sat on the mount branch right
+// next to it — even though the state was fully known.
+func TestLaunchingAMountedGameIsGuarded(t *testing.T) {
+	m := liveModel(t, 120)
+	m.st.MountedISO = m.games[0].Path
+	if !m.mounted(m.games[0]) {
+		t.Fatal("fixture doesn't have the selected game mounted")
+	}
+	_, cmd := m.handleKey(key("enter"))
+	if m.confirm == nil {
+		t.Fatal("launching over a running game asked nothing")
+	}
+	if cmd != nil {
+		t.Error("launch dispatched before the prompt was answered")
+	}
+	if !strings.Contains(m.confirm.label, "launch") {
+		t.Errorf("prompt = %q, want it to name the launch", m.confirm.label)
+	}
+}
+
+// The prompt raised because state is UNKNOWN must not quote the last title as
+// if it were current — that's the reading it exists to distrust.
+func TestUnsurePromptDoesNotClaimAGameIsRunning(t *testing.T) {
+	m := liveModel(t, 120)
+	m.online = false
+	m.handleKey(key("u"))
+	foot := m.footer()
+	if !strings.Contains(foot, "unknown") {
+		t.Errorf("footer doesn't flag the uncertainty:\n%s", foot)
+	}
+	if strings.Contains(foot, "Sample Game") {
+		t.Errorf("footer states a stale title as fact:\n%s", foot)
+	}
+}
+
+// --- parser degradation ---
+
+// The "markup changed" flash used to latch on a single bool, so it was spent by
+// whatever degraded first and stayed silent forever after. One transient bad
+// page early on bought permanent silence — including for the real break hours
+// later, when the fields the flash exists to explain went blank.
+func TestMarkupWarningFiresOnGettingWorse(t *testing.T) {
+	// missingN builds a status that fails to parse exactly n of the core fields
+	missingN := func(n int) Status {
+		st := Status{
+			CPUTemp: 58, RSXTemp: 61, FanPct: 26, MemFreeKB: 1152,
+			HDDFreeGB: 123.4, Firmware: "4.93 CEX PS3HEN 3.5.0",
+		}
+		fields := []func(){
+			func() { st.CPUTemp = unknown }, func() { st.RSXTemp = unknown },
+			func() { st.FanPct = unknown }, func() { st.MemFreeKB = unknown },
+			func() { st.HDDFreeGB = unknown }, func() { st.Firmware = "" },
+		}
+		for i := 0; i < n; i++ {
+			fields[i]()
+		}
+		if got := st.missing(); got != n {
+			t.Fatalf("fixture builder wrong: missing() = %d, want %d", got, n)
+		}
+		return st
+	}
+
+	poll := func(m *model, st Status) string {
+		m.flash = ""
+		mm, _ := m.Update(statusMsg{st: st})
+		return mm.(*model).flash
+	}
+
+	m := liveModel(t, 120)
+	m.prevMissing = 0
+
+	if got := poll(m, missingN(1)); got == "" {
+		t.Error("first degraded page didn't warn")
+	}
+	if got := poll(m, missingN(1)); got != "" {
+		t.Errorf("steady-state break warned again every poll: %q", got)
+	}
+	if got := poll(m, missingN(0)); got != "" {
+		t.Errorf("recovery raised a warning: %q", got)
+	}
+	// the case the latch lost entirely: a real break after an earlier blip
+	if got := poll(m, missingN(6)); got == "" {
+		t.Error("a later, worse break went unreported")
+	}
+	// and worsening again from a degraded state still warns
+	m.prevMissing = 1
+	if got := poll(m, missingN(3)); got == "" {
+		t.Error("going from 1 missing field to 3 went unreported")
+	}
+}
+
+// An outage is not a markup change. Coming back online into the same degraded
+// state the console left in must not re-raise the warning.
+func TestOutageDoesNotResetTheMarkupWarning(t *testing.T) {
+	m := liveModel(t, 120)
+	degraded := Status{CPUTemp: unknown, RSXTemp: 61, FanPct: 26, MemFreeKB: 1152,
+		HDDFreeGB: 123.4, Firmware: "4.93 CEX PS3HEN 3.5.0"}
+
+	m.Update(statusMsg{st: degraded}) // warns
+	m.Update(statusMsg{err: context_deadline{}})
+	m.flash = ""
+	mm, _ := m.Update(statusMsg{st: degraded})
+	if got := mm.(*model).flash; got != "" {
+		t.Errorf("reconnecting into the same state re-warned: %q", got)
+	}
+}
+
+// --- request serialization ---
+
+// README promised "one request in flight max" while status polls tracked
+// inFlight and fan commands tracked fanBusy, neither consulting the other. A
+// tick landing mid-fan-command let an older status page overwrite the newer fan
+// state, and burned one of webMAN's ~4 session slots doing it.
+func TestPollsDeferWhileTheConsoleIsBusy(t *testing.T) {
+	m := liveModel(t, 120)
+	m.fanBusy = true
+
+	mm, _ := m.Update(tickMsg{})
+	m = mm.(*model)
+	if m.inFlight {
+		t.Error("tick started a status poll on top of a fan command")
+	}
+	if !m.needStatus {
+		t.Error("the skipped poll wasn't remembered")
+	}
+
+	// the fan reply releases it, but only once the queue is empty
+	m.fanQueue = []string{fanUp}
+	mm, _ = m.Update(fanMsg{cmd: fanUp, st: Status{FanPct: 30, FanMode: "manual"}})
+	m = mm.(*model)
+	if !m.needStatus {
+		t.Error("deferred poll dropped while the queue was still draining")
+	}
+	if !m.fanBusy {
+		t.Fatal("queued command never dispatched")
+	}
+
+	mm, cmd := m.Update(fanMsg{cmd: fanUp, st: Status{FanPct: 31, FanMode: "manual"}})
+	m = mm.(*model)
+	if m.needStatus {
+		t.Error("deferred poll never taken after the queue drained")
+	}
+	if !m.inFlight || cmd == nil {
+		t.Error("catch-up poll didn't go out")
+	}
+}
+
+// Two actions in flight land in whatever order the console gets to them, and
+// each costs a session slot.
+func TestActionsDoNotStack(t *testing.T) {
+	m := liveModel(t, 120)
+	m.st.InGame = false // no prompt in the way
+
+	if _, cmd := m.handleKey(key("u")); cmd == nil {
+		t.Fatal("first eject never dispatched")
+	}
+	if !m.actBusy {
+		t.Fatal("dispatched action didn't claim the gate")
+	}
+	before := m.flash
+	m.handleKey(key("u"))
+	if m.flash == before {
+		t.Error("second action was silently swallowed with no explanation")
+	}
+
+	// the reply frees it, and triggers the refresh that confirms the new state
+	mm, _ := m.Update(actionMsg{label: "eject"})
+	m = mm.(*model)
+	if m.actBusy {
+		t.Error("gate still held after the action replied")
+	}
+	if !m.inFlight {
+		t.Error("successful action didn't trigger its follow-up status read")
+	}
+	if _, cmd := m.handleKey(key("u")); cmd == nil {
+		t.Error("actions never became possible again")
+	}
+}
+
+// A background status poll carries no console state, so it must not eat a
+// command the user has already confirmed — a 15s cadence against a 6s timeout
+// means an unlucky eject would simply vanish.
+func TestAPollInFlightDoesNotSwallowAnAction(t *testing.T) {
+	m := liveModel(t, 120)
+	m.st.InGame = false
+	m.inFlight = true // a scheduled poll is mid-request
+
+	_, cmd := m.handleKey(key("u"))
+	if cmd == nil {
+		t.Fatal("eject dropped because a status poll happened to be running")
+	}
+	if !m.actBusy {
+		t.Error("action didn't claim the action gate")
+	}
+	// but the poll that comes due meanwhile is still deferred, not raced
+	mm, _ := m.Update(tickMsg{})
+	if !mm.(*model).needStatus {
+		t.Error("tick during an action neither polled nor deferred")
+	}
+}

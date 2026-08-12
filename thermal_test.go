@@ -243,8 +243,28 @@ func TestThermalTitleBarReplacesTabs(t *testing.T) {
 	if got := lipgloss.Width(tab); got != m.width {
 		t.Errorf("title bar is %d cols, want %d", got, m.width)
 	}
-	if !strings.Contains(m.footer(), "f fan mode") {
-		t.Errorf("thermal footer missing the fan keys:\n%s", m.footer())
+	// the footer names the keys through the same hints as the fan row, so it
+	// can't keep calling ↑↓ "fan speed" on a console whose ↑↓ move the target
+	if foot := m.footer(); !strings.Contains(foot, m.fanHint()) || !strings.Contains(foot, m.fanModeHint()) {
+		t.Errorf("thermal footer missing the fan keys:\n%s", foot)
+	}
+}
+
+// In dynamic mode ↑↓ move the TARGET TEMPERATURE, not the fan speed. The fan
+// row said "target" while the footer two lines below insisted on "fan speed",
+// which is the more prominent of the two and the wrong one.
+func TestThermalFooterNamesWhatTheKeysDo(t *testing.T) {
+	m := liveModel(t, 120)
+	m.thermalOn = true
+	for mode, want := range map[string]string{"dynamic": "target", "manual": "speed"} {
+		m.st.FanMode = mode
+		if foot := m.footer(); !strings.Contains(foot, want) {
+			t.Errorf("%s mode: footer should say %q\n%s", mode, want, foot)
+		}
+	}
+	m.st.FanMode = "dynamic"
+	if strings.Contains(m.footer(), "speed") {
+		t.Errorf("dynamic mode: footer still calls the target a speed\n%s", m.footer())
 	}
 }
 
@@ -311,28 +331,64 @@ func TestFanKeysOnlyBindInsideThermal(t *testing.T) {
 			t.Errorf("%q issued a command from the main view", k)
 		}
 	}
-	if m.fanQueue != 0 || m.fanModePend {
+	if len(m.fanQueue) != 0 {
 		t.Error("main-view keys queued a fan command")
 	}
 
 	m.handleKey(key("t"))
 	for _, k := range []string{"+", "=", "up", "k"} {
-		m.fanBusy, m.fanQueue = false, 0
+		m.fanBusy, m.fanQueue = false, nil
 		if _, cmd := m.handleKey(key(k)); cmd == nil {
 			t.Errorf("%q stepped the fan nowhere", k)
 		}
 	}
 	for _, k := range []string{"-", "_", "down", "j"} {
-		m.fanBusy, m.fanQueue = true, 0 // busy: the press should queue, not fire
+		m.fanBusy, m.fanQueue = true, nil // busy: the press should queue, not fire
 		m.handleKey(key(k))
-		if m.fanQueue != -1 {
-			t.Errorf("%q queued %d, want -1", k, m.fanQueue)
+		if got := m.fanQueue; len(got) != 1 || got[0] != fanDown {
+			t.Errorf("%q queued %v, want [%s]", k, got, fanDown)
 		}
 	}
-	m.fanBusy, m.fanModePend, m.st.FanMode = true, false, "manual"
+	m.fanBusy, m.fanQueue, m.st.FanMode = true, nil, "manual"
 	m.handleKey(key("f"))
-	if !m.fanModePend {
-		t.Error("f didn't queue a mode toggle")
+	if got := m.fanQueue; len(got) != 1 || got[0] != fanMode {
+		t.Errorf("f queued %v, want [%s]", got, fanMode)
+	}
+}
+
+// The fan keys used to work from the very first frame, before any status had
+// come back. ↑↓ move the fan percentage in manual mode and the TARGET
+// TEMPERATURE in dynamic, and f is a one-way door out of SYSCON — so with the
+// mode unknown, none of the three can say what it is about to do, and f can
+// walk out of SYSCON without ever raising the warning that is the whole point
+// of that prompt.
+func TestFanKeysWaitForAKnownMode(t *testing.T) {
+	for _, tc := range []struct {
+		name, mode string
+		have       bool
+	}{
+		{"before any status", "", false},
+		{"status parsed but mode unreadable", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := liveModel(t, 120)
+			m.handleKey(key("t"))
+			m.haveStatus, m.st.FanMode = tc.have, tc.mode
+
+			for _, k := range []string{"up", "down", "+", "-", "f"} {
+				m.fanBusy, m.fanQueue, m.confirm = false, nil, nil
+				m.handleKey(key(k))
+				if len(m.fanQueue) != 0 || m.fanBusy {
+					t.Errorf("%q acted with the fan mode unknown (queue=%v busy=%v)", k, m.fanQueue, m.fanBusy)
+				}
+				if m.confirm != nil {
+					t.Errorf("%q raised a prompt it can't word honestly", k)
+				}
+				if m.flash == "" {
+					t.Errorf("%q was silently ignored — no explanation", k)
+				}
+			}
+		})
 	}
 }
 
@@ -351,13 +407,13 @@ func TestLeavingSysconAsks(t *testing.T) {
 	if !strings.Contains(m.confirm.label, "SYSCON") {
 		t.Errorf("prompt doesn't name the problem: %q", m.confirm.label)
 	}
-	if m.fanModePend || m.fanBusy {
+	if len(m.fanQueue) != 0 || m.fanBusy {
 		t.Error("the toggle fired before the prompt was answered")
 	}
 
 	// declining leaves the console alone
 	m.handleKey(key("n"))
-	if m.fanModePend || m.fanBusy {
+	if len(m.fanQueue) != 0 || m.fanBusy {
 		t.Error("declining still sent the toggle")
 	}
 
@@ -391,7 +447,7 @@ func TestArrowsDriveFanOnlyInThermal(t *testing.T) {
 	if m.cursor != 1 {
 		t.Errorf("down didn't move the list cursor on the main view (cursor %d)", m.cursor)
 	}
-	if m.fanQueue != 0 {
+	if len(m.fanQueue) != 0 {
 		t.Error("main-view arrow queued a fan step")
 	}
 
@@ -403,8 +459,8 @@ func TestArrowsDriveFanOnlyInThermal(t *testing.T) {
 		t.Errorf("arrows moved the list cursor behind the thermal screen (%d → %d)", before, m.cursor)
 	}
 	// one dispatched, one still queued
-	if !m.fanBusy || m.fanQueue != 1 {
-		t.Errorf("busy=%v queue=%d, want one in flight and one queued", m.fanBusy, m.fanQueue)
+	if !m.fanBusy || len(m.fanQueue) != 1 {
+		t.Errorf("busy=%v queue=%v, want one in flight and one queued", m.fanBusy, m.fanQueue)
 	}
 }
 
@@ -421,16 +477,16 @@ func TestFanPressesSerializeAndDrain(t *testing.T) {
 	if !m.fanBusy {
 		t.Fatal("nothing in flight after five presses")
 	}
-	if m.fanQueue != 4 {
-		t.Errorf("queue = %d, want 4 (one of the five dispatched)", m.fanQueue)
+	if len(m.fanQueue) != 4 {
+		t.Errorf("queue = %v, want 4 (one of the five dispatched)", m.fanQueue)
 	}
 
 	// each reply dispatches exactly one more
 	for want := 3; want >= 0; want-- {
 		mm, cmd := m.Update(fanMsg{cmd: fanUp, prevPct: 26, st: Status{FanPct: 27, FanMode: "manual"}})
 		m = mm.(*model)
-		if m.fanQueue != want {
-			t.Fatalf("queue = %d after a reply, want %d", m.fanQueue, want)
+		if len(m.fanQueue) != want {
+			t.Fatalf("queue = %v after a reply, want %d", m.fanQueue, want)
 		}
 		if want > 0 && !m.fanBusy {
 			t.Fatalf("queue still at %d but nothing in flight", want)
@@ -440,8 +496,8 @@ func TestFanPressesSerializeAndDrain(t *testing.T) {
 		}
 	}
 	m.Update(fanMsg{cmd: fanUp, prevPct: 27, st: Status{FanPct: 28, FanMode: "manual"}})
-	if m.fanBusy || m.fanQueue != 0 {
-		t.Errorf("drained to busy=%v queue=%d, want idle", m.fanBusy, m.fanQueue)
+	if m.fanBusy || len(m.fanQueue) != 0 {
+		t.Errorf("drained to busy=%v queue=%v, want idle", m.fanBusy, m.fanQueue)
 	}
 
 	// a leaned-on key must not build a backlog the console works through for
@@ -449,16 +505,77 @@ func TestFanPressesSerializeAndDrain(t *testing.T) {
 	for i := 0; i < 200; i++ {
 		m.handleKey(key("up"))
 	}
-	if m.fanQueue > fanQueueMax {
-		t.Errorf("queue = %d, want capped at %d", m.fanQueue, fanQueueMax)
+	if len(m.fanQueue) > fanQueueMax {
+		t.Errorf("queue = %d, want capped at %d", len(m.fanQueue), fanQueueMax)
 	}
 
 	// and a failure clears the backlog instead of hammering a sick console
 	mm, _ := m.Update(fanMsg{cmd: fanUp, err: context_deadline{}})
 	m = mm.(*model)
-	if m.fanQueue != 0 || m.fanBusy {
-		t.Errorf("after an error: queue=%d busy=%v, want cleared", m.fanQueue, m.fanBusy)
+	if len(m.fanQueue) != 0 || m.fanBusy {
+		t.Errorf("after an error: queue=%v busy=%v, want cleared", m.fanQueue, m.fanBusy)
 	}
+}
+
+// The queue is ordered, not netted. ?up moves the fan percentage in manual mode
+// and the target temperature in dynamic, so a step queued before a ?mode means
+// something different once the mode change lands. The old shape stored steps as
+// one net integer and the mode change as a separate boolean, and always sent the
+// boolean FIRST — so pressing up, up, f in manual mode sent mode, up, up, and
+// the two presses meant to spin the fan faster raised the temperature ceiling
+// instead. Exactly backwards, on the screen that exists to keep the console cool.
+func TestFanQueuePreservesPressOrder(t *testing.T) {
+	// the queue is read directly: drainFan pops its head, so this IS the order
+	// the console will be sent
+	m := liveModel(t, 120)
+	m.handleKey(key("t"))
+	m.st.FanMode = "manual"
+	m.fanBusy = true // hold everything in the queue so the whole order is visible
+
+	for _, k := range []string{"up", "up", "f"} {
+		m.handleKey(key(k))
+	}
+	want := []string{fanUp, fanUp, fanMode}
+	if !equalStrs(m.fanQueue, want) {
+		t.Errorf("queue = %v, want %v — a mode change must not overtake presses made before it", m.fanQueue, want)
+	}
+
+	// and the other way round, a mode change first stays first
+	m.fanQueue = nil
+	for _, k := range []string{"f", "up"} {
+		m.handleKey(key(k))
+	}
+	if want := []string{fanMode, fanUp}; !equalStrs(m.fanQueue, want) {
+		t.Errorf("queue = %v, want %v", m.fanQueue, want)
+	}
+
+	// an immediate reversal cancels rather than costing two round trips…
+	m.fanQueue = nil
+	m.handleKey(key("up"))
+	m.handleKey(key("down"))
+	if len(m.fanQueue) != 0 {
+		t.Errorf("queue = %v, want up/down to cancel", m.fanQueue)
+	}
+	// …but only against the tail, so it can never reach across a mode change
+	m.fanQueue = nil
+	for _, k := range []string{"up", "f", "down"} {
+		m.handleKey(key(k))
+	}
+	if want := []string{fanUp, fanMode, fanDown}; !equalStrs(m.fanQueue, want) {
+		t.Errorf("queue = %v, want %v — cancelling across a ?mode reorders intent", m.fanQueue, want)
+	}
+}
+
+func equalStrs(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 // A press has to register visually before the console answers — the round trip

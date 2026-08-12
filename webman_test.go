@@ -1,7 +1,11 @@
 package main
 
 import (
+	"context"
+	"net/http"
+	"net/http/httptest"
 	"os"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -104,7 +108,7 @@ func TestParseGames(t *testing.T) {
 			if consoleRank(prev.Console()) > consoleRank(g.Console()) {
 				t.Errorf("console order broken: %s %q after %s %q", g.Console(), g.Title, prev.Console(), prev.Title)
 			}
-			if prev.Console() == g.Console() && lessGames(g, prev) {
+			if prev.Console() == g.Console() && lessAt(games, i, i-1) {
 				t.Errorf("not sorted: %q > %q", prev.Title, g.Title)
 			}
 		}
@@ -124,6 +128,61 @@ func TestParseGames(t *testing.T) {
 	}
 	if storm.IconPath != "/dev_hdd0/tmp/wmtmp/FixtureStorm.PNG" {
 		t.Errorf("storm.IconPath = %q", storm.IconPath)
+	}
+}
+
+// In-game detection is the input to the mount/eject guard, so the XMB case is
+// safety-relevant and was the one state with no fixture at all.
+//
+// Note this fixture is DERIVED from the in-game one (game block and PlayTime
+// removed), not captured from a console — it proves the parser copes with an
+// absent game block, not that this is byte-for-byte what webMAN sends.
+func TestParseStatusOnXMB(t *testing.T) {
+	b, err := os.ReadFile("testdata/cpursx_xmb.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := parseStatus(string(b))
+
+	if s.InGame {
+		t.Error("InGame = true on a page with no game process")
+	}
+	if s.GameID != "" || s.GameTitle != "" || s.GameVer != "" {
+		t.Errorf("game fields populated on XMB: %q / %q / %q", s.GameID, s.GameTitle, s.GameVer)
+	}
+	if s.PlayTime != "" || s.PlaySecs != 0 {
+		t.Errorf("PlayTime = %q (%ds), want empty on XMB", s.PlayTime, s.PlaySecs)
+	}
+	// everything that isn't about the running game must still be there — an XMB
+	// page is not a degraded page, and must not raise the markup-changed warning
+	if n := s.missing(); n != 0 {
+		t.Errorf("missing() = %d on a healthy XMB page, want 0", n)
+	}
+	if s.CPUTemp != 58 || s.RSXTemp != 61 || s.FanPct != 26 {
+		t.Errorf("metrics = %d/%d/%d%%, want 58/61/26", s.CPUTemp, s.RSXTemp, s.FanPct)
+	}
+	if s.Uptime != "01:24:02" {
+		t.Errorf("Uptime = %q", s.Uptime)
+	}
+	if s.Firmware != "4.93 CEX PS3HEN 3.5.0" {
+		t.Errorf("Firmware = %q", s.Firmware)
+	}
+	// a disc can be mounted while sitting on the XMB — that's the "mounted, not
+	// running" state the guard treats very differently from in-game
+	if s.MountedISO != "/dev_hdd0/PS3ISO/SampleGame2.iso" {
+		t.Errorf("MountedISO = %q", s.MountedISO)
+	}
+}
+
+// An empty library is a legitimate answer, and has to be distinguishable from a
+// parse that found nothing in a page it didn't understand.
+func TestParseGamesEmptyLibrary(t *testing.T) {
+	b, err := os.ReadFile("testdata/mygames_empty.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if games := parseGames(string(b)); len(games) != 0 {
+		t.Errorf("empty library parsed to %d games", len(games))
 	}
 }
 
@@ -318,19 +377,418 @@ func TestSeriesOrder(t *testing.T) {
 	}
 }
 
+// lessAt is the pairwise order parseGames applies, given the library the keys
+// were computed over. The library matters: the release-order hint is qualified
+// across the whole list, not decided pair by pair.
+func lessAt(games []Game, i, j int) bool {
+	keys := gameKeys(games)
+	return keys[i].less(keys[j])
+}
+
 func TestFranchiseIDHint(t *testing.T) {
 	// same colon-franchise + same prefix pool → registration (≈release) order,
 	// regardless of subtitle alphabet
-	older := Game{Title: "Demo Saga: Chains", ID: "MOCK98110", Category: "hdd0/PS3ISO"}
-	newer := Game{Title: "Demo Saga: Ascension", ID: "MOCK98232", Category: "hdd0/PS3ISO"}
-	if !lessGames(older, newer) || lessGames(newer, older) {
+	saga := []Game{
+		{Title: "Demo Saga: Chains", ID: "MOCK98110", Category: "hdd0/PS3ISO"},
+		{Title: "Demo Saga: Ascension", ID: "MOCK98232", Category: "hdd0/PS3ISO"},
+	}
+	if !lessAt(saga, 0, 1) || lessAt(saga, 1, 0) {
 		t.Error("same-pool franchise entries should sort by title ID")
 	}
 	// different pools (DEMO vs MOCK) → hint unusable, alphabetical fallback
-	apoc := Game{Title: "FIXTURE STORM®: APOCALYPSE", ID: "DEMO00484", Category: "hdd0/PS3ISO"}
-	rift := Game{Title: "FIXTURE STORM®: PACIFIC RIFT", ID: "MOCK98155", Category: "hdd0/PS3ISO"}
-	if !lessGames(apoc, rift) {
+	storm := []Game{
+		{Title: "FIXTURE STORM®: APOCALYPSE", ID: "DEMO00484", Category: "hdd0/PS3ISO"},
+		{Title: "FIXTURE STORM®: PACIFIC RIFT", ID: "MOCK98155", Category: "hdd0/PS3ISO"},
+	}
+	if !lessAt(storm, 0, 1) {
 		t.Error("cross-pool franchise entries should fall back to title order")
+	}
+}
+
+// sort.Slice requires a strict weak ordering, and the old comparator decided
+// the ID hint per PAIR — "these two share a prefix pool, so compare by ID" —
+// which isn't transitive. This exact triple cycles: A<B by ID, B<C by title,
+// C<A by title. sort's output then depended on the order webMAN happened to
+// list the library in.
+func TestComparatorHasNoCycles(t *testing.T) {
+	games := []Game{
+		{Title: "F: Zulu", ID: "MOCK00001", Category: "hdd0/PS3ISO"},
+		{Title: "F: Alpha", ID: "MOCK00002", Category: "hdd0/PS3ISO"},
+		{Title: "F: Mike", ID: "DEMO00001", Category: "hdd0/PS3ISO"},
+		// a colon-less title collating INTO the franchise: ":" isn't a token, so
+		// this lands among the "F: …" entries and cycled them from outside even
+		// once the franchise agreed with itself
+		{Title: "F Kilo", ID: "MOCK00003", Category: "hdd0/PS3ISO"},
+		{Title: "Unrelated", ID: "MOCK00004", Category: "hdd0/PS3ISO"},
+	}
+	keys := gameKeys(games)
+	n := len(keys)
+	for i := 0; i < n; i++ {
+		if keys[i].less(keys[i]) {
+			t.Errorf("%d: not irreflexive", i)
+		}
+		for j := 0; j < n; j++ {
+			if keys[i].less(keys[j]) && keys[j].less(keys[i]) {
+				t.Errorf("%q and %q each sort before the other", games[i].Title, games[j].Title)
+			}
+			for k := 0; k < n; k++ {
+				if keys[i].less(keys[j]) && keys[j].less(keys[k]) && !keys[i].less(keys[k]) {
+					t.Errorf("cycle: %q < %q < %q but not %q < %q",
+						games[i].Title, games[j].Title, games[k].Title, games[i].Title, games[k].Title)
+				}
+			}
+		}
+	}
+}
+
+// The consequence of a broken comparator isn't just theory: the same library
+// listed in a different order came out sorted differently.
+func TestSortIsIndependentOfInputOrder(t *testing.T) {
+	base := []Game{
+		{Title: "F: Zulu", ID: "MOCK00001", Category: "hdd0/PS3ISO"},
+		{Title: "F: Alpha", ID: "MOCK00002", Category: "hdd0/PS3ISO"},
+		{Title: "F: Mike", ID: "DEMO00001", Category: "hdd0/PS3ISO"},
+		{Title: "F Kilo", ID: "MOCK00003", Category: "hdd0/PS3ISO"},
+	}
+	titles := func(gs []Game) string {
+		var b strings.Builder
+		for _, g := range gs {
+			b.WriteString(g.Title + "|")
+		}
+		return b.String()
+	}
+	sortCopy := func(gs []Game) []Game {
+		in := append([]Game(nil), gs...)
+		keys := gameKeys(in)
+		order := make([]int, len(in))
+		for i := range order {
+			order[i] = i
+		}
+		sort.SliceStable(order, func(a, b int) bool { return keys[order[a]].less(keys[order[b]]) })
+		out := make([]Game, len(in))
+		for i, gi := range order {
+			out[i] = in[gi]
+		}
+		return out
+	}
+	want := titles(sortCopy(base))
+	// every permutation of the four must land on the same order
+	perm := []int{0, 1, 2, 3}
+	var walk func(k int)
+	walk = func(k int) {
+		if k == len(perm) {
+			in := make([]Game, len(perm))
+			for i, p := range perm {
+				in[i] = base[p]
+			}
+			if got := titles(sortCopy(in)); got != want {
+				t.Fatalf("input order %v sorted to\n  %s\nwant\n  %s", perm, got, want)
+			}
+			return
+		}
+		for i := k; i < len(perm); i++ {
+			perm[k], perm[i] = perm[i], perm[k]
+			walk(k + 1)
+			perm[k], perm[i] = perm[i], perm[k]
+		}
+	}
+	walk(0)
+}
+
+// --- untrusted text ---
+
+// Every one of these strings ends up printed to the terminal, and webMAN is
+// unauthenticated HTTP found by a substring match — so the bytes are not
+// trustworthy just because they came from the LAN. A raw ESC in a game title
+// is a cursor move, a screen rewrite, or an OSC 52 clipboard write.
+func TestRemoteTextIsStrippedOfControlSequences(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"CSI colour", "Game\x1b[31mRED", "Game[31mRED"},
+		{"OSC 52 clipboard", "Game\x1b]52;c;cGFzcw==\x07", "Game]52;c;cGFzcw=="},
+		{"raw ESC", "\x1bGame", "Game"},
+		{"C1 eight-bit CSI", "Game31m", "Game31m"},
+		{"bidi override", "Game‮exe.gpj", "Gameexe.gpj"},
+		{"NUL and DEL", "Ga\x00me\x7f", "Game"},
+		{"newline folds to a space", "Line\nTwo", "Line Two"},
+		{"clean text untouched", "Sample Game™ 2 — 日本語", "Sample Game™ 2 — 日本語"},
+	}
+	for _, c := range cases {
+		if got := sanitize(c.in); got != c.want {
+			t.Errorf("%s: sanitize(%q) = %q, want %q", c.name, c.in, got, c.want)
+		}
+	}
+
+	// and it's applied at the parser boundary, so nothing downstream has to
+	// remember to do it
+	games := parseGames(`<T key="1" include="inc">` +
+		`<P key="title"><>Evil\x1b[2JGame</>` +
+		`<P key="module_action"><>/mount_ps3/dev_hdd0/PS3ISO/x.iso</>` +
+		`<P key="info"><>hdd0/PS3ISO</></T>`)
+	if len(games) != 1 {
+		t.Fatalf("fixture parsed to %d games", len(games))
+	}
+	for _, g := range games {
+		if strings.ContainsAny(g.Title+g.Path+g.Category+g.IconPath, "\x1b\x00\x07") {
+			t.Errorf("control byte survived into %+v", g)
+		}
+	}
+	st := parseStatus(`Firmware: 4.93\x1bCEX <br>` +
+		`<a href="https://google.com/search?q=x">Bad\x1b]0;title\x07Game</a>`)
+	if strings.ContainsAny(st.Firmware+st.GameTitle, "\x1b\x07") {
+		t.Errorf("control byte survived into status: %q / %q", st.Firmware, st.GameTitle)
+	}
+}
+
+// --- host handling ---
+
+// webMAN is addressed as host[:port]. A value carrying a path silently
+// prefixed every endpoint — status became /prefix/cpursx.ps3, a mount became
+// /prefix/mount_ps3/... — and the failures read as the console misbehaving.
+func TestNormalizeHost(t *testing.T) {
+	ok := map[string]string{
+		"192.168.1.50":        "192.168.1.50",
+		"192.168.1.50:80":     "192.168.1.50:80",
+		"http://192.168.1.50": "192.168.1.50", // the obvious thing to paste
+		"192.168.1.50/":       "192.168.1.50",
+		"  192.168.1.50  ":    "192.168.1.50",
+		"ps3.local":           "ps3.local",
+		"ps3.local:8080":      "ps3.local:8080",
+		"[fe80::1]:80":        "[fe80::1]:80",
+		"[2001:db8::1]":       "[2001:db8::1]",
+	}
+	for in, want := range ok {
+		got, err := normalizeHost(in)
+		if err != nil {
+			t.Errorf("normalizeHost(%q) errored: %v", in, err)
+			continue
+		}
+		if got != want {
+			t.Errorf("normalizeHost(%q) = %q, want %q", in, got, want)
+		}
+	}
+	bad := []string{
+		"",
+		"127.0.0.1:8080/prefix", // the case that quietly rewrote every endpoint
+		"127.0.0.1?x=1",
+		"127.0.0.1#frag",
+		"user@127.0.0.1",
+		"https://127.0.0.1",
+		"127.0.0.1:notaport",
+		"127.0.0.1:99999",
+		"has space",
+	}
+	for _, in := range bad {
+		if got, err := normalizeHost(in); err == nil {
+			t.Errorf("normalizeHost(%q) accepted it as %q", in, got)
+		}
+	}
+}
+
+// A console that redirects is not the console we were pointed at. Following it
+// would aim the next mount/eject/shutdown at whatever answered, while the
+// header still displayed the address the user chose.
+func TestClientRefusesOffHostRedirects(t *testing.T) {
+	elsewhere := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("webMAN impostor"))
+	}))
+	defer elsewhere.Close()
+
+	var sameOriginHits int
+	home := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/away":
+			http.Redirect(w, r, elsewhere.URL+"/cpursx.ps3", http.StatusFound)
+		case "/local":
+			http.Redirect(w, r, "/landed", http.StatusFound)
+		default:
+			sameOriginHits++
+			w.Write([]byte("CPU: 58°C"))
+		}
+	}))
+	defer home.Close()
+
+	cli := NewClient(strings.TrimPrefix(home.URL, "http://"))
+	if _, err := cli.get(context.Background(), "/away"); err == nil {
+		t.Error("followed a redirect to another host")
+	}
+	// a same-origin redirect is still fine — only the authority is policed
+	if _, err := cli.get(context.Background(), "/local"); err != nil {
+		t.Errorf("refused a same-origin redirect: %v", err)
+	}
+	if sameOriginHits != 1 {
+		t.Errorf("same-origin redirect landed %d times, want 1", sameOriginHits)
+	}
+}
+
+// Every action is a GET at a fixed path — webMAN's API, not a choice — so the
+// thing worth pinning is that each wrapper addresses the endpoint it claims to
+// and that a non-200 is an error rather than a silent success.
+func TestActionEndpoints(t *testing.T) {
+	var got string
+	fail := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.URL.RequestURI()
+		if fail {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte("webMAN 1.47.48q MOD CPU: 58°C"))
+	}))
+	defer srv.Close()
+	cli := NewClient(strings.TrimPrefix(srv.URL, "http://"))
+	ctx := context.Background()
+	game := Game{
+		Title:    "Sample Game™ 2",
+		Path:     "/dev_hdd0/PS3ISO/SampleGame2.iso",
+		MountURL: "/mount_ps3/dev_hdd0/PS3ISO/SampleGame2.iso",
+	}
+
+	cases := []struct {
+		name string
+		call func() error
+		want string
+	}{
+		{"mount", func() error { return cli.Mount(ctx, game) }, "/mount_ps3/dev_hdd0/PS3ISO/SampleGame2.iso"},
+		{"eject", func() error { return cli.Eject(ctx) }, "/mount_ps3/unmount"},
+		{"launch", func() error { return cli.Launch(ctx) }, "/play.ps3"},
+		{"play", func() error { return cli.Play(ctx, game) }, "/play.ps3/dev_hdd0/PS3ISO/SampleGame2.iso"},
+		{"shutdown", func() error { return cli.Shutdown(ctx) }, "/shutdown.ps3"},
+		{"restart", func() error { return cli.Restart(ctx) }, "/restart.ps3"},
+		// the message is path-escaped, so spaces and slashes can't reshape the URL
+		{"popup", func() error { return cli.Popup(ctx, "hello there/x") }, "/popup.ps3/hello%20there%2Fx"},
+	}
+	for _, c := range cases {
+		got = ""
+		if err := c.call(); err != nil {
+			t.Errorf("%s: %v", c.name, err)
+		}
+		if got != c.want {
+			t.Errorf("%s hit %q, want %q", c.name, got, c.want)
+		}
+	}
+
+	// Status and Games parse what they fetch
+	if st, err := cli.Status(ctx); err != nil || st.CPUTemp != 58 {
+		t.Errorf("Status = %+v, %v", st, err)
+	}
+	if got != "/cpursx.ps3" {
+		t.Errorf("Status hit %q", got)
+	}
+	if _, err := cli.Games(ctx); err != nil {
+		t.Errorf("Games: %v", err)
+	}
+	if got != "/dev_hdd0/xmlhost/game_plugin/mygames.xml" {
+		t.Errorf("Games hit %q", got)
+	}
+	if _, err := cli.Fan(ctx, fanUp); err != nil {
+		t.Errorf("Fan: %v", err)
+	}
+	if got != "/cpursx.ps3?up" {
+		t.Errorf("Fan hit %q", got)
+	}
+	if b, err := cli.Cover(ctx, "/dev_hdd0/tmp/wmtmp/x.PNG"); err != nil || len(b) == 0 {
+		t.Errorf("Cover = %d bytes, %v", len(b), err)
+	}
+
+	// a non-200 must reach the caller — webMAN answering "no" is not success
+	fail = true
+	for _, c := range cases {
+		if err := c.call(); err == nil {
+			t.Errorf("%s: HTTP 500 reported as success", c.name)
+		}
+	}
+	if _, err := cli.Status(ctx); err == nil {
+		t.Error("Status: HTTP 500 reported as success")
+	}
+	if _, err := cli.Games(ctx); err == nil {
+		t.Error("Games: HTTP 500 reported as success")
+	}
+	if _, err := cli.Fan(ctx, fanUp); err == nil {
+		t.Error("Fan: HTTP 500 reported as success")
+	}
+
+	// and so must a dead console
+	dead := NewClient("127.0.0.1:1")
+	if _, err := dead.Status(ctx); err == nil {
+		t.Error("Status against a dead address reported success")
+	}
+	if err := dead.Eject(ctx); err == nil {
+		t.Error("Eject against a dead address reported success")
+	}
+	if _, err := dead.Games(ctx); err == nil {
+		t.Error("Games against a dead address reported success")
+	}
+	if _, err := dead.Fan(ctx, fanUp); err == nil {
+		t.Error("Fan against a dead address reported success")
+	}
+	// an unbuildable request never leaves the process
+	if _, err := dead.get(ctx, "://"); err == nil {
+		t.Error("a malformed path built a request")
+	}
+}
+
+// Console and consoleRank drive the tab strip; an unrecognised category is
+// deliberately a PS3 title rather than an error.
+func TestConsoleClassification(t *testing.T) {
+	for cat, want := range map[string]string{
+		"hdd0/PSXISO": "PSX",
+		"hdd0/PS2ISO": "PS2",
+		"hdd0/PSPISO": "PSP",
+		"hdd0/PS3ISO": "PS3",
+		"":            "PS3",
+		"ntfs0/GAMES": "PS3",
+	} {
+		if got := (Game{Category: cat}).Console(); got != want {
+			t.Errorf("category %q → %q, want %q", cat, got, want)
+		}
+	}
+	if consoleRank("PSX") != 0 {
+		t.Error("PSX isn't first in release order")
+	}
+	if consoleRank("PS3") <= consoleRank("PSP") {
+		t.Error("PS3 should sort after PSP")
+	}
+	if consoleRank("DREAMCAST") != len(consoleOrder) {
+		t.Error("an unknown console should sort last, not panic")
+	}
+}
+
+// A value that matches the pattern but doesn't parse as a number is absent, not
+// zero — the whole point of the unknown sentinel.
+func TestMatchersRejectUnparseableNumbers(t *testing.T) {
+	huge := strings.Repeat("9", 40)
+	if got := matchInt(reCPU, "CPU: "+huge+"°C"); got != unknown {
+		t.Errorf("an int that overflows parsed as %d, want unknown", got)
+	}
+	// matches the [\d.,]+ class but isn't a number
+	if got := matchFloat(reHDD, "HDD: 1.2.3 GB free"); got != unknown {
+		t.Errorf("an unparseable float parsed as %v, want unknown", got)
+	}
+	if got := matchInt(reCPU, "no temperature here"); got != unknown {
+		t.Errorf("a missing int = %d, want unknown", got)
+	}
+	if got := matchFloat(reHDD, "no disk here"); got != unknown {
+		t.Errorf("a missing float = %v, want unknown", got)
+	}
+	if got := matchStr(reFW, "no firmware here"); got != "" {
+		t.Errorf("a missing string = %q", got)
+	}
+}
+
+// Each of the three fields can fail to parse independently, and any of them
+// makes the whole clock meaningless rather than partially usable.
+func TestClockSecsPartialGarbage(t *testing.T) {
+	for in, want := range map[string]int{
+		"1:2":      0, // not three parts
+		"aa:bb:cc": 0, // three parts, none numeric
+		"xx:23:45": 0, // hours unparseable
+		"01:xx:45": 0, // minutes unparseable
+		"01:23:xx": 0, // seconds unparseable
+		"99:59:59": 359999,
+	} {
+		if got := clockSecs(in); got != want {
+			t.Errorf("clockSecs(%q) = %d, want %d", in, got, want)
+		}
 	}
 }
 
