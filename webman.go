@@ -19,18 +19,27 @@ import (
 	"time"
 )
 
+// unknown marks a numeric field the status page didn't carry. It has to be a
+// sentinel rather than the zero value: webMAN legitimately reports 0 for some
+// of these (FAN SPEED: 0%), so 0 cannot mean "absent". Before this existed a
+// markup change made every metric parse as 0 — and 0°C renders as healthy
+// green, i.e. a broken parser looked like a perfectly cool console.
+const unknown = -1
+
 type Status struct {
 	InGame     bool
 	GameTitle  string // "Sample Game™ 2" (version suffix stripped)
 	GameID     string // "MOCK30982"
 	GameVer    string // "01.15"
-	CPUTemp    int
-	RSXTemp    int
-	FanMode    string // "SYSCON", "manual", ...
-	FanPct     int
-	MemFreeKB  int // free available memory (meminfo.avail) — ~1MB in-game is normal
+	CPUTemp    int    // °C, or unknown
+	RSXTemp    int    // °C, or unknown
+	FanMode    string // "SYSCON" or "manual" ("" if neither marker is present)
+	FanPct     int    // %, or unknown
+	MaxTemp    int    // manual mode only: °C ceiling at which webMAN forces the fan up; else unknown
+	MemFreeKB  int    // free available memory (meminfo.avail) — ~1MB in-game is normal; or unknown
 	HDDFreeGB  float64
 	PlayTime   string // "00:28:34" (empty on XMB)
+	PlaySecs   int    // PlayTime in seconds — the authoritative session length
 	Uptime     string // "00:28:53"
 	MountedISO string // "/dev_hdd0/PS3ISO/SampleGame2.iso", "" if nothing mounted
 	Firmware   string // "4.93 CEX PS3HEN 3.5.0"
@@ -39,6 +48,27 @@ type Status struct {
 	LifeDays   int    // 218 — total powered-on days (syscon counter)
 	Boots      int    // 2709 — power-on count
 	HardOffs   int    // 65 — power-ons minus clean power-offs = unclean shutdowns
+}
+
+// statusFields is how many of the page's core fields parseStatus expects to
+// find; missing() reports how many it actually lost, which is the signal that
+// webMAN's markup moved under us.
+const statusFields = 6
+
+func (s Status) missing() int {
+	n := 0
+	for _, v := range []int{s.CPUTemp, s.RSXTemp, s.FanPct, s.MemFreeKB} {
+		if v == unknown {
+			n++
+		}
+	}
+	if s.HDDFreeGB == unknown {
+		n++
+	}
+	if s.Firmware == "" {
+		n++
+	}
+	return n
 }
 
 type Game struct {
@@ -152,12 +182,38 @@ func (c *Client) Popup(ctx context.Context, msg string) error {
 	return c.fire(ctx, "/popup.ps3/"+url.PathEscape(msg))
 }
 
+// Fan commands, taken from the links the status page hangs on its own
+// temperature and fan readings: "up"/"dn" step the fan speed, "mode" toggles
+// SYSCON ↔ manual.
+//
+// These render the whole status page as their response, so the reply IS the
+// new state — no follow-up poll, and the caller can report the actual delta
+// instead of assuming the step landed.
+const (
+	fanUp   = "up"
+	fanDown = "dn"
+	fanMode = "mode"
+)
+
+func (c *Client) Fan(ctx context.Context, cmd string) (Status, error) {
+	body, err := c.get(ctx, "/cpursx.ps3?"+cmd)
+	if err != nil {
+		return Status{}, err
+	}
+	return parseStatus(string(body)), nil
+}
+
 // --- parsers (markers pinned from testdata/cpursx_ingame.html) ---
 
 var (
-	reCPU      = regexp.MustCompile(`CPU:\s*(\d+)°C`)
-	reRSX      = regexp.MustCompile(`RSX:\s*(\d+)°C`)
-	reFanMode  = regexp.MustCompile(`\[Fan control:\s*([^\]]+)\]`)
+	reCPU     = regexp.MustCompile(`CPU:\s*(\d+)°C`)
+	reRSX     = regexp.MustCompile(`RSX:\s*(\d+)°C`)
+	reFanMode = regexp.MustCompile(`\[Fan control:\s*([^\]]+)\]`)
+	// webMAN doesn't just drop the fan-control label in manual mode — it
+	// swaps that slot for the temperature ceiling at which it forces the fan
+	// up. °C is required so the Fahrenheit copy of the line ("MAX: 186°F")
+	// can't match. Confirmed by a before/after capture across a ?mode toggle.
+	reFanMax   = regexp.MustCompile(`\(MAX:\s*(\d+)°C\)`)
 	reFanPct   = regexp.MustCompile(`FAN SPEED:\s*(\d+)%`)
 	reMem      = regexp.MustCompile(`MEM:\s*([\d,]+)\s*KB`)
 	reHDD      = regexp.MustCompile(`HDD:\s*([\d.,]+)\s*GB free`)
@@ -178,7 +234,7 @@ var (
 
 func parseStatus(html string) Status {
 	s := Status{
-		FanMode:   matchStr(reFanMode, html),
+		MaxTemp:   unknown,
 		PlayTime:  matchStr(rePlay, html),
 		Uptime:    matchStr(reUptime, html),
 		GameID:    matchStr(reGameID, html),
@@ -190,9 +246,27 @@ func parseStatus(html string) Status {
 	s.RSXTemp = matchInt(reRSX, html)
 	s.FanPct = matchInt(reFanPct, html)
 	s.MemFreeKB = matchInt(reMem, html)
+	s.HDDFreeGB = matchFloat(reHDD, html)
+	s.PlaySecs = clockSecs(s.PlayTime)
 	s.InGame = rePID.MatchString(html)
-	if m := reHDD.FindStringSubmatch(html); m != nil {
-		s.HDDFreeGB, _ = strconv.ParseFloat(strings.ReplaceAll(m[1], ",", ""), 64)
+
+	// ?mode cycles three states, and each renders that one slot differently —
+	// so the mode is read from which marker is present, including neither:
+	//
+	//   [Fan control: SYSCON]   console's own control
+	//   (MAX: 98°C)             webMAN ramps to hold a target temp
+	//   nothing                 manual fixed %
+	//
+	// Which matters beyond the label: ?up/?dn move the *target* in dynamic
+	// mode and the *percentage* in manual, so callers can't assume what a
+	// step did. The FanPct guard keeps a page that didn't parse at all from
+	// reporting itself as manual.
+	if mode := matchStr(reFanMode, html); mode != "" {
+		s.FanMode = mode
+	} else if mx := matchInt(reFanMax, html); mx != unknown {
+		s.FanMode, s.MaxTemp = "dynamic", mx
+	} else if s.FanPct != unknown {
+		s.FanMode = "manual"
 	}
 	if m := reGameName.FindStringSubmatch(html); m != nil {
 		if v := reGameVer.FindStringSubmatch(m[1]); v != nil {
@@ -221,10 +295,40 @@ func matchStr(re *regexp.Regexp, s string) string {
 func matchInt(re *regexp.Regexp, s string) int {
 	m := re.FindStringSubmatch(s)
 	if m == nil {
+		return unknown
+	}
+	n, err := strconv.Atoi(strings.ReplaceAll(m[1], ",", ""))
+	if err != nil {
+		return unknown
+	}
+	return n
+}
+
+func matchFloat(re *regexp.Regexp, s string) float64 {
+	m := re.FindStringSubmatch(s)
+	if m == nil {
+		return unknown
+	}
+	f, err := strconv.ParseFloat(strings.ReplaceAll(m[1], ",", ""), 64)
+	if err != nil {
+		return unknown
+	}
+	return f
+}
+
+// clockSecs converts webMAN's "HH:MM:SS" to seconds (0 if unparseable).
+func clockSecs(c string) int {
+	parts := strings.Split(c, ":")
+	if len(parts) != 3 {
 		return 0
 	}
-	n, _ := strconv.Atoi(strings.ReplaceAll(m[1], ",", ""))
-	return n
+	h, err1 := strconv.Atoi(parts[0])
+	mi, err2 := strconv.Atoi(parts[1])
+	s, err3 := strconv.Atoi(parts[2])
+	if err1 != nil || err2 != nil || err3 != nil {
+		return 0
+	}
+	return h*3600 + mi*60 + s
 }
 
 // mygames.xml is XMB-flavored pseudo-XML (`<>value</>` is not a legal tag),

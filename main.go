@@ -20,6 +20,7 @@ func main() {
 	alarm := flag.Int("alarm", 80, "temp alarm threshold, °C (PS3 overheats/shuts down ~85)")
 	noArt := flag.Bool("no-art", false, "disable cover art")
 	once := flag.Bool("once", false, "print status once and exit (no TUI)")
+	stats := flag.Bool("stats", false, "print play history and exit (no console needed)")
 	ver := flag.Bool("version", false, "print version")
 	flag.Parse()
 
@@ -29,6 +30,18 @@ func main() {
 	}
 	if *interval < 5*time.Second {
 		*interval = 5 * time.Second
+	}
+
+	dataRoot, err := dataDir()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "ps3top:", err)
+		os.Exit(1)
+	}
+
+	// --stats reads the local log only, so it works with the console off
+	if *stats {
+		runStats(dataRoot)
+		return
 	}
 
 	cacheRoot, err := os.UserCacheDir()
@@ -57,7 +70,7 @@ func main() {
 
 	// 30fps caps the renderer's repaint ticker — half the default wakeups, and
 	// with a 15s poll cadence even that is mostly idle no-ops.
-	m := newModel(cli, *host, *interval, *alarm, !*noArt, cacheDir)
+	m := newModel(cli, *host, *interval, *alarm, !*noArt, cacheDir, loadHistory(dataRoot))
 	if _, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithFPS(30)).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "ps3top:", err)
 		os.Exit(1)
@@ -82,8 +95,12 @@ func runOnce(cli *Client, host string) {
 	default:
 		fmt.Println("XMB — no disc mounted")
 	}
-	fmt.Printf("CPU %d°C  RSX %d°C  FAN %d%% (%s)  MEM %.1fM  HDD %.1fG\n",
-		st.CPUTemp, st.RSXTemp, st.FanPct, st.FanMode, float64(st.MemFreeKB)/1024, st.HDDFreeGB)
+	fmt.Printf("CPU %s  RSX %s  FAN %s (%s)  MEM %s  HDD %s\n",
+		plainInt(st.CPUTemp, "°C"), plainInt(st.RSXTemp, "°C"), plainInt(st.FanPct, "%"),
+		st.FanMode, plainMem(st.MemFreeKB), plainHDD(st.HDDFreeGB))
+	if n := st.missing(); n > 0 {
+		fmt.Printf("warning: %d of %d status fields not found — webMAN markup may have changed\n", n, statusFields)
+	}
 	if st.Uptime != "" {
 		fmt.Printf("up %s", st.Uptime)
 		if st.PlayTime != "" {
@@ -107,4 +124,27 @@ func runOnce(cli *Client, host string) {
 		}
 	}
 	fmt.Printf("games: %d (%d PS3, %d PSX)\n", len(games), len(games)-psx, psx)
+}
+
+// --once is scripting-facing, so an absent field prints ASCII "n/a" rather
+// than the TUI's em dash.
+func plainInt(v int, unit string) string {
+	if v == unknown {
+		return "n/a"
+	}
+	return fmt.Sprintf("%d%s", v, unit)
+}
+
+func plainMem(kb int) string {
+	if kb == unknown {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.1fM", float64(kb)/1024)
+}
+
+func plainHDD(gb float64) string {
+	if gb == unknown {
+		return "n/a"
+	}
+	return fmt.Sprintf("%.1fG", gb)
 }

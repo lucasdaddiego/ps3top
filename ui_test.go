@@ -1,0 +1,235 @@
+package main
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/charmbracelet/lipgloss"
+)
+
+func liveModel(t *testing.T, width int) *model {
+	t.Helper()
+	dir := t.TempDir()
+	m := testModel(t, dir, nil)
+	m.width, m.height = width, 30
+	m.listH = m.height - headerH - footerH
+	m.online, m.haveStatus = true, true
+	m.st = Status{
+		InGame: true, GameTitle: "Sample Game™ 2", GameID: "MOCK30982", GameVer: "01.15",
+		CPUTemp: 58, RSXTemp: 61, FanMode: "SYSCON", FanPct: 26, MemFreeKB: 1152,
+		MaxTemp:   unknown, // SYSCON: webMAN reports no ceiling
+		HDDFreeGB: 123.4, PlayTime: "01:23:45", PlaySecs: 5025, Uptime: "01:24:02",
+		Firmware: "4.93 CEX PS3HEN 3.5.0", WMVersion: "1.47.48q",
+		LifeDays: 100, Boots: 1234, HardOffs: 34,
+	}
+	for i := 0; i < 60; i++ { // enough history for sparklines and a trend
+		m.pushSamples(Status{CPUTemp: 55 + i/6, RSXTemp: 60, FanPct: 26})
+	}
+	m.games = []Game{
+		{Title: "Sample Game™ 2", ID: "MOCK30982", Category: "hdd0/PS3ISO", Path: "/dev_hdd0/PS3ISO/SampleGame2.iso"},
+		{Title: "Alpha", ID: "MOCK00001", Category: "hdd0/PS3ISO"},
+	}
+	m.secNums = []int{1, 2}
+	m.consoles, m.counts, m.numW, m.titleColW = []string{"PS3"}, []int{2}, 1, 20
+	m.applyFilter("")
+	return m
+}
+
+// Every header line has to land on exactly the terminal width: bubbletea's
+// line-diff renderer desyncs on a wrapped line and garbles the whole frame,
+// which is why View hard-clips. The box math has to be right anyway.
+//
+// (Below ~100 cols the metrics and the lifetime block genuinely don't both
+// fit and boxMid lets the line run long for View to clip — pre-existing, and
+// the reason this starts at 100.)
+func TestHeaderLinesExactlyFillWidth(t *testing.T) {
+	for _, w := range []int{100, 120, 160, 200} {
+		m := liveModel(t, w)
+		for i, line := range headerLines(m) {
+			if got := lipgloss.Width(line); got != w {
+				t.Errorf("width %d: header line %d is %d cols\n%s", w, i, got, line)
+			}
+		}
+	}
+}
+
+// Whatever the width, turning sparklines on must never make the header wider
+// than it would have been without them.
+func TestSparklinesNeverWidenTheHeader(t *testing.T) {
+	for _, w := range []int{60, 72, 80, 90, 100, 120, 200} {
+		m := liveModel(t, w)
+		with := headerLines(m)
+
+		bare := liveModel(t, w)
+		bare.hCPU, bare.hRSX, bare.hFan = series{}, series{}, series{}
+		without := headerLines(bare)
+
+		for i := range with {
+			a, b := lipgloss.Width(with[i]), lipgloss.Width(without[i])
+			if a > b {
+				t.Errorf("width %d: sparklines widened header line %d from %d to %d\n%s", w, i, b, a, with[i])
+			}
+		}
+	}
+}
+
+// headerLines drops the blank breathing row between the box and the tab strip.
+func headerLines(m *model) []string {
+	var out []string
+	for _, l := range strings.Split(m.header(), "\n") {
+		if l != "" {
+			out = append(out, l)
+		}
+	}
+	return out
+}
+
+// When the header can't hold everything, the static syscon trivia goes before
+// the live sparklines — and the metric readings themselves go last of all.
+func TestHeaderDegradesInPriorityOrder(t *testing.T) {
+	hasSpark := func(s string) bool { return strings.ContainsAny(s, string(blocks)) }
+
+	full := liveModel(t, 160).header()
+	if !hasSpark(full) || !strings.Contains(full, "1234 boots") {
+		t.Errorf("160 cols should carry sparklines AND the full lifetime block:\n%s", full)
+	}
+
+	// tight enough that the boot counters have to go, but the shapes stay
+	mid := liveModel(t, 110).header()
+	if !hasSpark(mid) {
+		t.Errorf("110 cols dropped the sparklines before the boot counters:\n%s", mid)
+	}
+	if strings.Contains(mid, "1234 boots") {
+		t.Errorf("110 cols kept the full lifetime block:\n%s", mid)
+	}
+	if !strings.Contains(mid, "∞ 100d") {
+		t.Errorf("110 cols dropped the ∞ day counter too eagerly:\n%s", mid)
+	}
+
+	// narrow enough that even the shapes go — but never the readings
+	narrow := liveModel(t, 72).header()
+	if hasSpark(narrow) {
+		t.Errorf("sparkline survived at 72 cols:\n%s", narrow)
+	}
+	for _, want := range []string{"58°", "61°", "26%", "123G"} {
+		if !strings.Contains(narrow, want) {
+			t.Errorf("narrow header dropped %q:\n%s", want, narrow)
+		}
+	}
+}
+
+// The keybar is the other thing that used to run off the edge; it has a short
+// form so the trailing keys aren't the ones silently clipped away.
+func TestKeybarFitsWidth(t *testing.T) {
+	for _, w := range []int{72, 90, 110, 160} {
+		m := liveModel(t, w)
+		if got := lipgloss.Width(m.footer()); got > w {
+			t.Errorf("width %d: keybar is %d cols\n%s", w, got, m.footer())
+		}
+		for _, key := range []string{"s sort", "t thermals"} {
+			if !strings.Contains(m.footer(), key) {
+				t.Errorf("width %d: keybar lost %q", w, key)
+			}
+		}
+	}
+}
+
+// A parse break has to look like a parse break, not like a cold console.
+func TestMissingMetricsRenderAsGaps(t *testing.T) {
+	m := liveModel(t, 120)
+	m.st.CPUTemp, m.st.RSXTemp, m.st.FanPct = unknown, unknown, unknown
+	m.st.MemFreeKB, m.st.HDDFreeGB = unknown, unknown
+
+	head := m.header()
+	if strings.Contains(head, "0°") {
+		t.Errorf("unknown temp rendered as a number:\n%s", head)
+	}
+	if n := strings.Count(head, "—"); n < 5 {
+		t.Errorf("gaps = %d, want 5 (CPU/RSX/FAN/HDD/MEM):\n%s", n, head)
+	}
+	for i, line := range headerLines(m) {
+		if got := lipgloss.Width(line); got != m.width {
+			t.Errorf("degraded header line %d is %d cols, want %d", i, got, m.width)
+		}
+	}
+}
+
+func TestRowsFitListWidth(t *testing.T) {
+	dir := t.TempDir()
+	h := loadHistory(dir)
+	h.fold(sessionRec{ID: "MOCK30982", Title: "Sample Game™ 2", End: time.Now(), Secs: 137520})
+
+	for _, w := range []int{80, 100, 160} {
+		m := liveModel(t, w)
+		m.hist = h
+		m.recalcPlayCol()
+		for i := range m.order {
+			for _, sel := range []bool{false, true} {
+				row := m.renderRow(m.order[i], sel)
+				if got := lipgloss.Width(row); got > m.listWidth() {
+					t.Errorf("width %d sel=%v: row %d is %d cols, list width is %d\n%s",
+						w, sel, i, got, m.listWidth(), row)
+				}
+			}
+		}
+		// the played total must actually show up
+		if !strings.Contains(m.renderRow(0, false), "38h12m") {
+			t.Errorf("width %d: play total missing from row", w)
+		}
+	}
+}
+
+// The selected row is background-filled edge to edge; the play column must not
+// punch a hole in it or run past the edge.
+func TestSelectedRowStillFillsWidth(t *testing.T) {
+	dir := t.TempDir()
+	h := loadHistory(dir)
+	h.fold(sessionRec{ID: "MOCK30982", Title: "Sample Game™ 2", End: time.Now(), Secs: 3600})
+
+	m := liveModel(t, 120)
+	m.hist = h
+	m.recalcPlayCol()
+	if got := lipgloss.Width(m.renderRow(0, true)); got != m.listWidth() {
+		t.Errorf("selected row is %d cols, want %d", got, m.listWidth())
+	}
+}
+
+// A full frame must render without panicking in the states ps3top actually
+// sits in all day.
+func TestViewRendersInEveryState(t *testing.T) {
+	states := map[string]func(*model){
+		"in game":       func(m *model) {},
+		"offline":       func(m *model) { m.online, m.lastErr = false, context_deadline{} },
+		"no status yet": func(m *model) { m.haveStatus = false },
+		"xmb":           func(m *model) { m.st.InGame, m.st.MountedISO = false, "" },
+		"mounted":       func(m *model) { m.st.InGame, m.st.MountedISO = false, "/dev_hdd0/PS3ISO/SampleGame2.iso" },
+		"no games":      func(m *model) { m.games, m.order, m.consoles = nil, nil, nil },
+		"filtering":     func(m *model) { m.filterTyping = true; m.applyFilter("zzz") },
+		"confirming":    func(m *model) { m.confirm = &confirmAction{label: "eject", danger: true} },
+		"alarming":      func(m *model) { m.alarming = true; m.st.CPUTemp = 82 },
+		"recent sort":   func(m *model) { m.sortRecent = true; m.applyFilter("") },
+		"degraded":      func(m *model) { m.st.CPUTemp, m.st.RSXTemp = unknown, unknown },
+		"thermal":       func(m *model) { m.thermalOn = true },
+		"thermal cold":  func(m *model) { m.thermalOn = true; m.hCPU, m.hRSX, m.hFan = series{}, series{}, series{} },
+		"thermal off":   func(m *model) { m.thermalOn = true; m.online, m.st = false, Status{} },
+	}
+	for name, setup := range states {
+		m := liveModel(t, 120)
+		setup(m)
+		out := m.View()
+		if out == "" {
+			t.Errorf("%s: empty frame", name)
+		}
+		for i, line := range strings.Split(strings.TrimSuffix(out, "\x1b[0m"), "\n") {
+			if got := lipgloss.Width(line); got > m.width {
+				t.Errorf("%s: line %d is %d cols, over the %d-col terminal\n%s", name, i, got, m.width, line)
+			}
+		}
+	}
+}
+
+// context_deadline stands in for a network error in the offline state.
+type context_deadline struct{}
+
+func (context_deadline) Error() string { return "dial tcp: i/o timeout" }

@@ -5,17 +5,19 @@ game, and mount/launch/eject of the game library, in one dashboard. Built
 2026-08-09 against webMAN MOD 1.47.48 (sMAN skin) on FW 4.93 PS3HEN.
 
 ```
-╭─ ps3top · 192.168.0.100 · online ─────── 4.93 HEN · wM 1.47.48q ─╮
-│ CPU 58°  RSX 61°  FAN 26%  HDD 123G  MEM 1.1M   ∞ 100d · 1234 boots · 34 hard-off · up 1h24m │
-│ ▶ Sample Game™ 2 v01.15 · MOCK30982                   play 1h23m │
-╰──────────────────────────────────────────────────────────────────╯
+╭─ ps3top · 192.168.0.100 · online ─────────────────────────────────────── 4.93 HEN · wM 1.47.48q ─╮
+│ CPU 58° ▁▁▂▃▄▅▅▆↗   RSX 61° ▃▃▃▃▄▄▄▄   FAN 26% ▄▄▄▄▄▄▄▄   HDD 123G   MEM 1.1M  ∞ 100d · up 1h24m │
+│ ▶ Sample Game™ 2 v01.15 · MOCK30982                                                   play 1h23m │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────╯
 
-── PSX · 1 │ PS3 · 21 ──────────────────────────────────── 16/21 ──
-▌ 16  Sample Game™ 2            [MOCK30982]  ● mounted   [cover art]
-   17  Sample Quest: The Beg…    [MOCK00103]
-── ⏎ mount/launch · u eject · p play · ⇥ console · / filter · … ──
+──  PSX · 1 │ PS3 · 21  ───────────────────────────────────────────────────────────────────── 1/3 ──
+▌ 16  Sample Game™ 2             [MOCK30982] ● mounted                                        38h12m
+  17  Sample Quest: The Beginni… [MOCK00103]                                                   6h04m
+  18  Fixture Storm™             [MOCK98137]
+── ⏎ mount · p play · u eject · ⇥ console · / filter · s sort · q quit ─────────────────────────────
 ```
 
+(A real terminal also carries the cover art panel on the right, at ≥84 cols.)
 The status frame turns red while the temp alarm is active. Healthy metric
 values render green; the active console tab is highlighted in the brand blue.
 
@@ -25,13 +27,15 @@ values render green; the active console tab is highlighted in the brand blue.
 go install github.com/lucasdaddiego/ps3top@latest   # → ~/go/bin/ps3top
 ps3top              # TUI (auto-discovers the console)
 ps3top --once       # plain one-shot status (scripting/cron friendly)
+ps3top --stats      # play history; local-only, works with the console off
 ```
 
 From a clone: `make install` puts a stripped release build in `~/.bin`;
 `make` lists the other targets (build, run, test, clean).
 
 Flags: `--host` (default: auto-discover; env `PS3TOP_HOST`) · `--interval`
-(15s, min 5s) · `--alarm` (80°C) · `--no-art` · `--once` · `--version`.
+(15s, min 5s) · `--alarm` (80°C) · `--no-art` · `--once` · `--stats` ·
+`--version`.
 
 With no `--host`, ps3top finds the console itself: it sweeps the machine's
 private IPv4 /24s (TCP :80, then a `GET /cpursx.ps3` that must answer with the
@@ -54,28 +58,173 @@ Metric scales (researched, values plain when healthy — color means attention):
   60s–low 70s is normal PS3 gaming → plain; 70–77 yellow; 78+ red; alarm
   (flash + bell) at 80 by default — console overheat-warns/shuts down ~85.
 - **FAN** (webMAN wiki: 40% manual recommended on HEN, SYSCON fine "if under
-  70% in games"): plain <50, yellow 50–69, red 70+.
+  70% in games"): plain <50, yellow 50–69, red 70+. In **manual** mode the
+  speed is fixed and nothing ramps it for you, so a low percentage is fine on
+  XMB and is the one way to cook a console mid-game; in **dynamic** mode
+  webMAN ramps toward a target temperature you can raise past anything sane.
+  The mode is rendered large on the thermal screen for exactly that reason.
 - **HDD free** (dual-layer PS3 ISO ≤ ~45GB): plain ≥60G, yellow <60G, red <20G.
 - **MEM** = free available memory (`meminfo.avail` in webMAN source) — ~1MB
   in-game is normal (the game owns the RAM): yellow <512K, red <256K.
 
+A field the status page doesn't carry renders as a dim `—`, never as a number.
+This matters more than it looks: `0` is a value webMAN legitimately reports
+(`FAN SPEED: 0%`), so it can't double as "absent" — and a temperature of 0°
+colors as perfectly healthy, meaning a webMAN markup change would otherwise
+make a broken parser look like a cool console. Losing fields also raises one
+flash: `status page: N of 6 fields not found`.
+
 Header extras: game version (`· v01.15`) next to the running title, and the
 syscon lifetime counters right of the metrics — `∞ 218d · 2709 boots ·
 65 hard-off` (hard-off = power-ons minus clean power-offs).
+
+## Sparklines
+
+CPU, RSX and FAN carry an inline sparkline over the last ~240 polls (an hour at
+the default cadence), bucketed so a full ring shows the whole hour rather than
+the last two minutes. It costs nothing on the wire — the samples come from the
+poll that was already happening.
+
+The scale is the window's own min/max widened to a floor (10° for temps, 20
+points for fan) and centered, so idle sensor jitter stays shallow and a steady
+reading sits mid-height instead of pinned to the floor. A `↗` appears when the
+last ~10 minutes moved by 3° or more (warn-colored, since a climb is the thing
+you might have to act on); cooling gets a dim `↘`; anything smaller is noise
+and gets nothing. Offline stretches are recorded as gaps, so the x axis stays
+honest instead of silently compressing across an outage.
+
+Fan-vs-temp correlation ("is SYSCON actually ramping") is shown rather than
+told — the two plots sit side by side.
+
+## Thermal screen (`t`) and fan control
+
+`t` swaps the game list for a full-width temperature screen: CPU and RSX as
+block-font readouts colored by their thermal band (readable across a room), a
+multi-row plot of the same history at a much bigger zoom, and fan control.
+
+```
+                    CPU                         RSX
+           ██████  ██  ██  ██████      ██████  ██████  ██████
+               ██  ██  ██  ██  ██      ██      ██  ██  ██  ██
+               ██  ██████  ██████      ██████  ██████  ██████
+               ██      ██              ██  ██  ██  ██
+               ██      ██              ██████  ██████
+                    warm                       normal
+
+ 80 ┤· · · · · · · · · · · · · · · · · · · · · · · · · · · · · · · ·
+    ┤                                                  ▄▄▄▄▄▄▄▄▄▄▄▄
+ 70 ┤· · · · · · · · · · · · · · ·▄▄▄▄▄█████ · · · · · · · · · · · ·
+    ┤            ▄▄▄▄▄▄▄▄▄▄▄▄█████     ▄▄▄▄▄▄▄▄▄▄▄███████████
+ 56 ┼████████████                                                   
+ └ 1h00m ago                              ── CPU  ── RSX     now ┘
+
+  FAN  42%  SYSCON  ▁▂▂▂▃▃▃▄▄▄▅▅▅▆▆▆            +/− adjust · f mode
+```
+
+Two lines share one auto-scaled axis: color identifies the sensor, dotted
+gridlines mark the 70 / 78 / alarm thresholds, and position carries the value.
+(Recoloring the lines by band would have made the two sensors indistinguishable
+exactly when it matters.) The axis pulls in a threshold sitting just above the
+data so you can see the headroom rather than a full-height trace with nothing
+to read it against. Under ~21 terminal rows the big readouts drop and the plot
+takes their space; the fan row never drops, since it's where the controls are
+documented.
+
+`↑`/`↓` (or `+`/`−`) step the speed, `f` toggles the mode. Fan control uses
+`/cpursx.ps3?up` · `?dn` · `?mode` — the links webMAN hangs on its own
+temperature and fan readings. Those endpoints answer with the entire status
+page, so **the response is the new state**: ps3top adopts it directly (one
+request, not an action plus a re-poll) and flashes the delta that actually
+happened — `fan 26% → 31%`, or `fan unchanged at 100%` when the console
+declines.
+
+That self-verifying report earned its keep immediately. The page renders one
+slot three different ways depending on who is driving the fan:
+
+| slot | mode | what `↑↓` moves |
+|---|---|---|
+| `<small>[Fan control: SYSCON]</small>` | console's own control | — |
+| `(MAX: 86°C)` | webMAN ramps to hold a target temp | **the target** |
+| *nothing* | manual fixed % | **the percentage** |
+
+**`f` cannot get you back to SYSCON.** `?mode` only cycles webMAN's own
+strategies (Lowest / Manual / Auto on `/setup.ps3`), and each of those sets
+`fc.checked = 1` — SYSCON is that checkbox *off* ("Enable dynamic fan
+control"), reachable only from the setup form. So leaving SYSCON is a one-way
+door from in here, and `f` asks first when you're on it, labelled `f take over`
+rather than `f mode`. Getting back: open `http://<ps3>/setup.ps3`, untick
+**Enable dynamic fan control**, save. ps3top deliberately won't submit that
+form itself — it's 143 fields and 103 checkboxes, and a partial GET submit
+would silently clear every setting that isn't currently ticked.
+
+Two consequences worth knowing. First, an absent `[Fan control: …]` marker is
+not a parse failure — it's manual mode, so the mode is read from *which* marker
+is present including neither (guarded on the fan percentage having parsed, so a
+genuinely broken page still reports nothing rather than claiming manual).
+Second, `?up` means different things in different modes: pressing it in dynamic
+mode moved the target 86°→98° while the fan sat at 31%. A report written around
+the percentage would have said "unchanged" while the console's thermal ceiling
+quietly rose 12°.
+
+So `fanReport` diffs **every** field a fan command can move — mode, percentage,
+target — and names whatever actually changed. The keybar hint follows the mode
+too (`↑↓ target` vs `↑↓ speed`), and the Fahrenheit copy of that line carries
+its own `(MAX: 186°F)`, so the pattern requires `°C`.
+
+Presses are **queued and sent one at a time**: webMAN has ~4 session slots, and
+one GET per keypress turns a quick 24%→40% adjustment into a pile-up that reads
+as an unresponsive UI. The queue is capped, cleared on error, and shown live in
+the fan row (`⋯+3`) so a press registers before the console has answered.
+
+No confirm on fan changes, deliberately: the in-game confirm elsewhere exists
+because `/mount_ps3` can pull a running game's disc, which loses progress. A
+fan step has no such failure mode — it's small, immediately visible, and undone
+by the opposite key. The mode is rendered large because leaving the console in
+manual at a low percentage is the one way to get this wrong.
+
+When the header can't hold everything, it gives up the least live thing first:
+full lifetime counters → `∞ Nd` only → sparklines → metric readings last. The
+keybar has a short form for the same reason.
+
+## Play history
+
+The PS3 keeps no record of how long you've played anything. ps3top appends one
+NDJSON line per session to `~/Library/Application Support/ps3top/history.ndjson`
+(XDG data dir on Linux) — deliberately the data dir and not the cache dir,
+since covers are disposable and this file isn't.
+
+Session length comes from webMAN's own `PlayTime` field rather than a clock
+ps3top starts, so a record is right even when ps3top joins a game already in
+progress or is restarted mid-session. That's also why there's no open-session
+sidecar file to recover after a crash. A session that both starts and ends
+while ps3top isn't running is simply never seen.
+
+What it buys you: `s` toggles the list between alphabetical and
+recently-played (so the handful of games you actually play float above the
+alphabetical wall), rows carry a dim play total, the art panel gains
+`38h12m · 9 sessions` / `last 2h ago`, quitting a game flashes
+`Borderlands™ 2 — 2h14m (peak 71°/74°)`, and `ps3top --stats` prints the
+leaderboard with peak temps and HDD drift since the first record.
 
 ## Keys
 
 `↑↓`/`jk` move (smooth scroll, 2-row margin) · `pgup/pgdn`/`ctrl+u/d` page ·
 `home`/`end` jump · `tab`/`←→`/`hl` switch console tab · `⏎` mount (already
 mounted → launch) · `p` play = mount+launch · `u` eject · `/` fuzzy filter
-(`esc` clears, scoped to the active tab) · `m` popup message on the TV ·
-`g` reload games · `r` refresh now · `S`/`R` shutdown/restart (confirmed) ·
-`q` quit.
+(`esc` clears, scoped to the active tab) · `s` sort alphabetical ↔ recently
+played · `t` thermal screen · `m` popup message on the TV · `g` reload games ·
+`r` refresh now · `S`/`R` shutdown/restart (confirmed) · `q` quit.
+
+Inside the thermal screen: `+`/`−` fan speed · `f` fan mode · `r` refresh ·
+`esc` (or `t`, or `q`) back. `q` closes the screen rather than quitting ps3top
+— quitting out of a subscreen on the key that everywhere else means "back" is
+a nasty surprise mid-session.
 
 The separator line is a tab strip, one tab per console present, in release
 order — `⟨ PSX · 1 ⟩⟨ PS3 · 21 ⟩` — with cursor position (and filter state) on
-the right. Games are numbered per console and sorted alphabetically; starts on
-the PS3 tab.
+the right, plus `recent` when that sort is active. Games are numbered per
+console and sorted alphabetically; starts on the PS3 tab. `s` keeps the cursor
+on whatever game it was on, so you can flip sorts without losing your place.
 
 While a game is running, mount/play/eject/power ask for a red confirm first —
 deliberately, because the `/mount_ps3` silent variant bypasses webMAN's own
@@ -95,7 +244,8 @@ in-game mount protection.
   `~/Library/Caches/ps3top/covers/`.
 - Actions: `/mount_ps3/<path>` · `/mount_ps3/unmount` · `/play.ps3` (launch
   mounted) · `/play.ps3/<path>` (mount+launch) · `/popup.ps3/<text>` ·
-  `/shutdown.ps3` · `/restart.ps3`.
+  `/shutdown.ps3` · `/restart.ps3` · `/cpursx.ps3?up|dn|mode` (fan; the reply
+  is the new status page, so these cost one request and no follow-up poll).
 - webMAN also runs a PS3MAPI text protocol on **port 7887** (temps, IDPS,
   process list, memory peek/poke) — unused here, but it's the door for any
   future tool that needs live memory access.
@@ -113,6 +263,11 @@ not retained in the model; the *terminal* keeps each browsed cover (~225KB
 decoded) until ps3top exits and deletes them all. Idle: ~12–14MB RSS (Go
 runtime floor), CPU rounds to zero.
 
+Sparklines and play history don't move any of that: the samples come from the
+poll that already runs (three fixed 240-int rings, ~6KB total, no allocation
+per poll), and the history file is appended once per finished session — a few
+hundred bytes a day at worst, read once at startup.
+
 ## Cover art
 
 Kitty graphics protocol in Unicode-placeholder mode (kitty & Ghostty; detected
@@ -128,6 +283,20 @@ real webMAN (sMAN skin) output in structure, but every game title, title ID,
 and counter is invented (`MOCK…`/`DEMO…` IDs), chosen to exercise the sort
 rules — word-before-number, roman numerals, `V2`-style numbers, embedded
 digits, ™/® noise, newline titles, and the franchise-ID hint.
+
+Beyond the parsers: `spark_test.go` pins the sparkline's scaling floor and
+trend noise band, `history_test.go` covers session recording (including that
+length comes from webMAN's counter, not ps3top's uptime) and the recency sort,
+and `ui_test.go` renders whole frames in every state ps3top sits in all day —
+asserting each line lands on exactly the terminal width, since a wrapped line
+desyncs bubbletea's line-diff renderer and garbles the frame. It also pins the
+header's degradation order, which is a judgment call worth not regressing.
+
+`thermal_test.go` covers the glyph font and plot geometry, that the fan keys
+bind only inside the thermal screen, that `q` there means "back" and not
+"quit", and — via `httptest` — that the fan endpoints are addressed correctly
+and their response is parsed as the new status. **Nothing in the suite talks to
+a real console**; fan control has never been fired at hardware from here.
 
 If webMAN gets updated and parsing breaks: capture the fresh pages to
 somewhere **outside the repo** (`curl -s http://$PS3/cpursx.ps3` and

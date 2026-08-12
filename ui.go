@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -42,6 +43,12 @@ var (
 
 	tabOnSt  = lipgloss.NewStyle().Foreground(lipgloss.Color("231")).Background(lipgloss.Color("39")).Bold(true)
 	tabOffSt = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+
+	// series colors for the thermal plot. Color encodes which sensor; the
+	// gridlines encode the thermal bands — so the lines stay identifiable even
+	// when both are deep in the red.
+	cpuSt = lipgloss.NewStyle().Foreground(lipgloss.Color("39"))
+	rsxSt = lipgloss.NewStyle().Foreground(lipgloss.Color("213"))
 )
 
 type (
@@ -64,12 +71,27 @@ type (
 		id   int
 		err  error
 	}
+	// fanMsg carries the status page the fan endpoint returned, plus what the
+	// fan read before it — so the UI can report the move that actually
+	// happened rather than assume the step landed.
+	fanMsg struct {
+		cmd      string
+		prevPct  int
+		prevMax  int
+		prevMode string
+		st       Status
+		err      error
+	}
 )
 
 type confirmAction struct {
 	label  string
 	danger bool
 	run    func(context.Context) error
+	// raw runs instead of run when set, as a thunk so the action is built at
+	// confirm time rather than when the prompt is raised — fan commands mutate
+	// the queue and report their own delta, so they can't go through doAction.
+	raw func() tea.Cmd
 }
 
 type model struct {
@@ -88,6 +110,25 @@ type model struct {
 	haveStatus bool
 	lastErr    error
 	inFlight   bool
+	warnedBad  bool // the "markup changed" flash is raised once, not every poll
+
+	hCPU, hRSX, hFan series
+
+	hist       *history
+	sortRecent bool
+	playColW   int  // width reserved for the per-row play total (0 = no history)
+	thermalOn  bool // `t` — full-body temperature screen with fan control
+
+	// fan presses are queued and sent one at a time — see queueFan
+	fanBusy     bool
+	fanQueue    int // net pending steps, + up / − down
+	fanModePend bool
+
+	// open session, closed out when the game stops or ps3top quits. Length
+	// comes from webMAN's PlayTime, so it survives a mid-game restart.
+	sesOn                       bool
+	sesID, sesTitle             string
+	sesSecs, sesPeakC, sesPeakR int
 
 	games     []Game
 	consoles  []string // consoles present, chronological (PSX, PS2, PSP, PS3)
@@ -119,7 +160,7 @@ type model struct {
 	flip bool // alternates per frame — see View
 }
 
-func newModel(cli *Client, host string, interval time.Duration, alarm int, artOn bool, cacheDir string) *model {
+func newModel(cli *Client, host string, interval time.Duration, alarm int, artOn bool, cacheDir string, hist *history) *model {
 	m := &model{
 		cli:         cli,
 		host:        host,
@@ -127,9 +168,13 @@ func newModel(cli *Client, host string, interval time.Duration, alarm int, artOn
 		alarm:       alarm,
 		artOn:       artOn && artSupported(),
 		cacheDir:    cacheDir,
+		hist:        hist,
 		coverIDs:    map[string]int{},
 		transmitted: map[int]bool{},
 		coverBusy:   map[string]bool{},
+	}
+	if m.hist == nil { // every read path dereferences it; an empty log is the no-op
+		m.hist = &history{stats: map[string]gameStat{}, firstHDD: unknown, lastHDD: unknown}
 	}
 	pi := textinput.New()
 	pi.Placeholder = "message to the TV"
@@ -171,6 +216,86 @@ func (m *model) fetchGames() tea.Cmd {
 		g, err := cli.Games(ctx)
 		return gamesMsg{g, err}
 	}
+}
+
+// fanQueueMax bounds the queue so a leaned-on key can't build a backlog of
+// requests the console will still be working through a minute later.
+const fanQueueMax = 20
+
+// queueFan records a press and starts draining if nothing is in flight. Fan
+// requests are serialized deliberately: webMAN's server has ~4 session slots,
+// and firing one GET per keypress turns a quick 24%→40% adjustment into a
+// pile-up that reads as an unresponsive UI.
+func (m *model) queueFan(step int, mode bool) tea.Cmd {
+	if mode {
+		m.fanModePend = true
+	} else {
+		m.fanQueue = clamp(m.fanQueue+step, -fanQueueMax, fanQueueMax)
+	}
+	return m.drainFan()
+}
+
+func (m *model) drainFan() tea.Cmd {
+	if m.fanBusy {
+		return nil // the in-flight reply will drain the rest
+	}
+	cmd := ""
+	switch {
+	case m.fanModePend:
+		m.fanModePend, cmd = false, fanMode
+	case m.fanQueue > 0:
+		m.fanQueue, cmd = m.fanQueue-1, fanUp
+	case m.fanQueue < 0:
+		m.fanQueue, cmd = m.fanQueue+1, fanDown
+	default:
+		return nil
+	}
+	m.fanBusy = true
+	cli, prevPct, prevMax, prevMode := m.cli, m.st.FanPct, m.st.MaxTemp, m.st.FanMode
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+		defer cancel()
+		st, err := cli.Fan(ctx, cmd)
+		return fanMsg{cmd, prevPct, prevMax, prevMode, st, err}
+	}
+}
+
+// fanReport says what the console actually did, by diffing every field a fan
+// command can move rather than assuming which one it moved.
+//
+// That generality is the point: ?up/?dn adjust the *target temperature* in
+// dynamic mode and the *fan percentage* in manual, so a report written around
+// one of them announces "unchanged" while the other quietly moves — which is
+// exactly how this was wrong the first time.
+func fanReport(msg fanMsg) string {
+	var parts []string
+	prevMode, nowMode := strings.ToLower(msg.prevMode), strings.ToLower(msg.st.FanMode)
+	switch {
+	case nowMode != "" && prevMode == "":
+		parts = append(parts, "mode "+nowMode)
+	case nowMode != "" && nowMode != prevMode:
+		parts = append(parts, "mode "+prevMode+" → "+nowMode)
+	}
+	if msg.prevPct != unknown && msg.st.FanPct != unknown && msg.prevPct != msg.st.FanPct {
+		parts = append(parts, fmt.Sprintf("fan %d%% → %d%%", msg.prevPct, msg.st.FanPct))
+	}
+	if msg.prevMax > 0 && msg.st.MaxTemp > 0 && msg.prevMax != msg.st.MaxTemp {
+		parts = append(parts, fmt.Sprintf("target %d° → %d°", msg.prevMax, msg.st.MaxTemp))
+	}
+	if len(parts) > 0 {
+		return strings.Join(parts, " · ")
+	}
+	if msg.st.FanPct == unknown {
+		return "fan: no reading"
+	}
+	return fmt.Sprintf("nothing changed (fan %d%%%s)", msg.st.FanPct, modeSuffix(nowMode))
+}
+
+func modeSuffix(mode string) string {
+	if mode == "" {
+		return ""
+	}
+	return ", " + mode
 }
 
 func doAction(label string, fn func(context.Context) error) tea.Cmd {
@@ -220,6 +345,83 @@ func (m *model) ensureCover() tea.Cmd {
 	}
 }
 
+// --- history ---
+
+func (m *model) pushSamples(st Status) {
+	m.hCPU.push(st.CPUTemp)
+	m.hRSX.push(st.RSXTemp)
+	m.hFan.push(st.FanPct)
+}
+
+// trackSession folds one poll into the open play session, closing it out when
+// the game stops or changes. Reports whether it set a flash.
+func (m *model) trackSession(st Status) bool {
+	if !st.InGame {
+		return m.flushSession()
+	}
+	flashed := false
+	if m.sesOn && statKey(m.sesID, m.sesTitle) != statKey(st.GameID, st.GameTitle) {
+		flashed = m.flushSession() // straight from one game into another
+	}
+	if !m.sesOn {
+		m.sesOn = true
+		m.sesID, m.sesTitle = st.GameID, st.GameTitle
+		m.sesSecs, m.sesPeakC, m.sesPeakR = 0, 0, 0
+	}
+	// webMAN's own counter, not a clock we started — correct even if ps3top
+	// joined the session late or was restarted mid-game
+	m.sesSecs = st.PlaySecs
+	if st.CPUTemp != unknown && st.CPUTemp > m.sesPeakC {
+		m.sesPeakC = st.CPUTemp
+	}
+	if st.RSXTemp != unknown && st.RSXTemp > m.sesPeakR {
+		m.sesPeakR = st.RSXTemp
+	}
+	return flashed
+}
+
+// flushSession appends the open session to the history log. Reports whether it
+// set a flash.
+func (m *model) flushSession() bool {
+	if !m.sesOn {
+		return false
+	}
+	secs, title, id := m.sesSecs, m.sesTitle, m.sesID
+	peakC, peakR := m.sesPeakC, m.sesPeakR
+	m.sesOn = false
+	if secs <= 0 || title == "" {
+		return false // nothing worth recording (or PlayTime didn't parse)
+	}
+
+	rec := sessionRec{ID: id, Title: title, End: time.Now(), Secs: secs, PeakCPU: peakC, PeakRSX: peakR}
+	if m.st.HDDFreeGB != unknown {
+		rec.HDDFreeGB = m.st.HDDFreeGB
+	}
+	if err := m.hist.add(rec); err != nil {
+		m.flash = "history: " + err.Error()
+		return true
+	}
+	m.recalcPlayCol()
+	m.flash = fmt.Sprintf("%s — %s", title, fmtDur(secs))
+	if peakC > 0 {
+		m.flash += fmt.Sprintf(" (peak %d°/%d°)", peakC, peakR)
+	}
+	return true
+}
+
+// recalcPlayCol sizes the per-row play column to the widest total in the
+// library, so the column is stable across rows instead of ragged.
+func (m *model) recalcPlayCol() {
+	m.playColW = 0
+	for _, g := range m.games {
+		if s, ok := m.hist.stat(g); ok {
+			if n := len(fmtDur(s.Secs)); n > m.playColW {
+				m.playColW = n
+			}
+		}
+	}
+}
+
 // --- list mechanics ---
 
 func (m *model) activeConsole() string {
@@ -247,6 +449,21 @@ func (m *model) applyFilter(q string) {
 			pool = append(pool, i)
 		}
 	}
+	if m.sortRecent {
+		// stable, so games with no history keep the alphabetical order they
+		// arrived in and just fall below the played ones
+		sort.SliceStable(pool, func(i, j int) bool {
+			si, oki := m.hist.stat(m.games[pool[i]])
+			sj, okj := m.hist.stat(m.games[pool[j]])
+			if oki != okj {
+				return oki
+			}
+			if !oki {
+				return false
+			}
+			return si.Last.After(sj.Last)
+		})
+	}
 	if q == "" {
 		m.order = pool
 	} else {
@@ -266,6 +483,26 @@ func (m *model) applyFilter(q string) {
 		}
 	}
 	m.cursor, m.offset = 0, 0
+}
+
+// reorder re-applies the current filter under a changed sort, keeping the
+// cursor on whatever game it was on — a sort toggle that dumps you back at
+// row 1 makes it useless for "where did that one go".
+func (m *model) reorder() {
+	sel, had := 0, false
+	if m.cursor >= 0 && m.cursor < len(m.order) {
+		sel, had = m.order[m.cursor], true
+	}
+	m.applyFilter(m.filterQ)
+	if had {
+		for i, gi := range m.order {
+			if gi == sel {
+				m.cursor = i
+				break
+			}
+		}
+		m.ensureVisible()
+	}
 }
 
 func (m *model) switchTab(d int) tea.Cmd {
@@ -327,15 +564,29 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			m.online = false
 			m.lastErr = msg.err
+			// record the outage as gaps so the sparkline's x axis stays
+			// honest — an offline stretch is blank, not silently compressed
+			m.pushSamples(Status{CPUTemp: unknown, RSXTemp: unknown, FanPct: unknown})
 			return m, nil
 		}
 		m.online, m.haveStatus, m.lastErr = true, true, nil
 		m.st = msg.st
+		m.pushSamples(msg.st)
 		nowAlarming := msg.st.CPUTemp >= m.alarm || msg.st.RSXTemp >= m.alarm
 		if nowAlarming && !m.alarming {
 			rawWrite("\a")
 		}
 		m.alarming = nowAlarming
+
+		flashed := m.trackSession(msg.st)
+		if n := msg.st.missing(); n > 0 && !m.warnedBad {
+			m.warnedBad = true
+			m.flash = fmt.Sprintf("status page: %d of %d fields not found — webMAN markup may have changed", n, statusFields)
+			flashed = true
+		}
+		if flashed {
+			return m, m.clearFlashLater()
+		}
 		return m, nil
 
 	case gamesMsg:
@@ -369,6 +620,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		m.numW = len(strconv.Itoa(maxSec))
+		m.recalcPlayCol()
 		m.activeTab = 0
 		for i, c := range m.consoles {
 			if c == prevConsole {
@@ -397,6 +649,20 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case fanMsg:
+		m.fanBusy = false
+		if msg.err != nil {
+			m.fanQueue, m.fanModePend = 0, false // don't keep hammering a console that just failed
+			m.flash = "fan: " + msg.err.Error()
+			return m, m.clearFlashLater()
+		}
+		// the endpoint answered with the whole status page, so adopt it as the
+		// current reading — no follow-up poll needed
+		m.online, m.haveStatus, m.lastErr = true, true, nil
+		m.st = msg.st
+		m.flash = fanReport(msg)
+		return m, tea.Batch(m.clearFlashLater(), m.drainFan())
+
 	case clearFlashMsg:
 		if msg.gen == m.flashGen {
 			m.flash = ""
@@ -411,6 +677,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
+		m.flushSession()
 		clearImages()
 		return m, tea.Quit
 	}
@@ -421,6 +688,9 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.confirm = nil
 		switch msg.String() {
 		case "y", "Y", "enter":
+			if c.raw != nil {
+				return m, c.raw()
+			}
 			return m, doAction(c.label, c.run)
 		}
 		m.flash = "cancelled"
@@ -477,11 +747,50 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmd, m.ensureCover())
 	}
 
+	// screen: thermals. Fan control lives here rather than on the main keybar —
+	// one key instead of four, and the controls sit under their own feedback.
+	if m.thermalOn {
+		switch msg.String() {
+		case "t", "esc", "q":
+			m.thermalOn = false
+			return m, m.ensureCover() // the cover for the selected row comes back
+		// arrows drive the fan here: there's no list to navigate on this
+		// screen, so they're free and they're the obvious thing to reach for
+		case "up", "k", "+", "=":
+			return m, m.queueFan(+1, false)
+		case "down", "j", "-", "_":
+			return m, m.queueFan(-1, false)
+		case "f":
+			// ?mode only cycles webMAN's own strategies (Lowest/Manual/Auto)
+			// and every one of them re-enables webMAN fan control, so this is
+			// a one-way door out of SYSCON: getting back means unticking
+			// "Enable dynamic fan control" on /setup.ps3, which is a 143-field
+			// form ps3top has no business submitting.
+			if strings.EqualFold(m.st.FanMode, "SYSCON") {
+				m.confirm = &confirmAction{
+					label: "leave SYSCON? only webMAN's setup page can switch back",
+					raw:   func() tea.Cmd { return m.queueFan(0, true) },
+				}
+				return m, nil
+			}
+			return m, m.queueFan(0, true)
+		case "r":
+			if !m.inFlight {
+				return m, m.fetchStatus()
+			}
+		}
+		return m, nil
+	}
+
 	cli := m.cli
 	switch msg.String() {
 	case "q":
+		m.flushSession()
 		clearImages()
 		return m, tea.Quit
+	case "t":
+		m.thermalOn = true
+		return m, nil
 	case "up", "k":
 		m.moveCursor(-1)
 		return m, m.ensureCover()
@@ -506,6 +815,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.switchTab(1)
 	case "shift+tab", "left", "h":
 		return m, m.switchTab(-1)
+	case "s":
+		m.sortRecent = !m.sortRecent
+		m.reorder()
+		return m, m.ensureCover()
 	case "/":
 		m.filterTyping = true
 		m.filterInput.SetValue(m.filterQ)
@@ -530,10 +843,10 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "u":
 		return m.guarded("eject", func(ctx context.Context) error { return cli.Eject(ctx) })
 	case "S":
-		m.confirm = &confirmAction{"shutdown", m.st.InGame, func(ctx context.Context) error { return cli.Shutdown(ctx) }}
+		m.confirm = &confirmAction{label: "shutdown", danger: m.st.InGame, run: func(ctx context.Context) error { return cli.Shutdown(ctx) }}
 		return m, nil
 	case "R":
-		m.confirm = &confirmAction{"restart", m.st.InGame, func(ctx context.Context) error { return cli.Restart(ctx) }}
+		m.confirm = &confirmAction{label: "restart", danger: m.st.InGame, run: func(ctx context.Context) error { return cli.Restart(ctx) }}
 		return m, nil
 	case "p":
 		g, ok := m.selectedGame()
@@ -559,7 +872,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // dialog is the only net.
 func (m *model) guarded(label string, fn func(context.Context) error) (tea.Model, tea.Cmd) {
 	if m.online && m.st.InGame {
-		m.confirm = &confirmAction{label, true, fn}
+		m.confirm = &confirmAction{label: label, danger: true, run: fn}
 		return m, nil
 	}
 	return m, doAction(label, fn)
@@ -592,9 +905,14 @@ func (m *model) View() string {
 		return "starting…"
 	}
 	head := m.header()
-	body := m.renderList()
-	if m.artShown() {
-		body = lipgloss.JoinHorizontal(lipgloss.Top, body, "  ", m.artPanel())
+	var body string
+	if m.thermalOn {
+		body = m.thermalView() // takes the full width; no art panel beside it
+	} else {
+		body = m.renderList()
+		if m.artShown() {
+			body = lipgloss.JoinHorizontal(lipgloss.Top, body, "  ", m.artPanel())
+		}
 	}
 	body = lipgloss.NewStyle().Height(m.listH).MaxHeight(m.listH).Render(body)
 	// hard-clip every line to the terminal width: a single wrapped line would
@@ -631,31 +949,7 @@ func (m *model) header() string {
 	}
 	l0 := boxEdge(m.width, b, "╭", "╮", topLeft, topRight)
 
-	// console box: metrics + uptime inside, lifetime in the bottom border
-	metrics := ""
-	if m.online && m.haveStatus {
-		fan := dimSt.Render("FAN ") + fanVal(m.st.FanPct)
-		if !strings.EqualFold(m.st.FanMode, "SYSCON") && m.st.FanMode != "" {
-			fan += dimSt.Render(" " + strings.ToLower(m.st.FanMode))
-		}
-		metrics = tempPart("CPU", m.st.CPUTemp, m.alarm) + "   " +
-			tempPart("RSX", m.st.RSXTemp, m.alarm) + "   " +
-			fan + "   " +
-			dimSt.Render("HDD ") + hddVal(m.st.HDDFreeGB) + "   " +
-			dimSt.Render("MEM ") + memVal(m.st.MemFreeKB)
-	}
-	var clocks []string
-	if m.st.LifeDays > 0 {
-		clocks = append(clocks, fmt.Sprintf("∞ %dd · %d boots · %d hard-off", m.st.LifeDays, m.st.Boots, m.st.HardOffs))
-	}
-	if m.online && m.st.Uptime != "" {
-		clocks = append(clocks, "up "+fmtClock(m.st.Uptime))
-	}
-	right := ""
-	if len(clocks) > 0 {
-		right = dimSt.Render(strings.Join(clocks, " · "))
-	}
-	l1 := boxMid(m.width, b, metrics, right)
+	l1 := m.metricsRow(b)
 
 	// game state closes the box as its last content line
 	var state string
@@ -690,6 +984,108 @@ func (m *model) header() string {
 	return l0 + "\n" + l1 + "\n" + l2 + "\n" + l3 + "\n\n" + m.tabLine()
 }
 
+// metricsRow packs the metrics, their sparklines, and the syscon clocks into
+// one line, giving up the least live thing first when they don't all fit: the
+// boot counters only move once per boot, the sparklines move all day. Widest
+// combination that fits wins, so a narrow window degrades instead of
+// overflowing into View's clip.
+func (m *model) metricsRow(b lipgloss.Style) string {
+	bare, sparked := "", ""
+	if m.online && m.haveStatus {
+		bare, sparked = m.metricLine(false), m.metricLine(true)
+	}
+	clocks := m.clockVariants()
+	for _, left := range []string{sparked, bare} {
+		for _, right := range clocks {
+			if lipgloss.Width(left)+lipgloss.Width(right)+6 <= m.width {
+				return boxMid(m.width, b, left, dimSt.Render(right))
+			}
+		}
+	}
+	return boxMid(m.width, b, bare, "")
+}
+
+// clockVariants lists the right-hand clock block from richest to poorest. The
+// ∞ day counter is the part worth keeping longest — the boots/hard-off detail
+// is the first to go.
+func (m *model) clockVariants() []string {
+	life, short, up := "", "", ""
+	if m.st.LifeDays > 0 {
+		life = fmt.Sprintf("∞ %dd · %d boots · %d hard-off", m.st.LifeDays, m.st.Boots, m.st.HardOffs)
+		short = fmt.Sprintf("∞ %dd", m.st.LifeDays)
+	}
+	if m.online && m.st.Uptime != "" {
+		up = "up " + fmtClock(m.st.Uptime)
+	}
+	var out []string
+	for _, parts := range [][]string{{life, up}, {short, up}, {up}, {}} {
+		var keep []string
+		for _, p := range parts {
+			if p != "" {
+				keep = append(keep, p)
+			}
+		}
+		if s := strings.Join(keep, " · "); len(out) == 0 || out[len(out)-1] != s {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// Minimum sparkline span per metric — how much change has to happen before the
+// plot uses its full height. Without a floor, 1° of idle sensor jitter would
+// draw the same dramatic slope as a real climb into the alarm band.
+const (
+	tempSpan = 10 // °C
+	fanSpan  = 20 // percentage points
+)
+
+// metricLine builds the metrics row. Sparklines ride CPU/RSX/FAN only: HDD
+// moves on a weekly scale and MEM is quantized by whether a game is running,
+// so neither has a shape worth reading at minute resolution.
+func (m *model) metricLine(sparks bool) string {
+	cpu := tempPart("CPU", m.st.CPUTemp, m.alarm)
+	rsx := tempPart("RSX", m.st.RSXTemp, m.alarm)
+	fan := dimSt.Render("FAN ") + fanVal(m.st.FanPct)
+	if !strings.EqualFold(m.st.FanMode, "SYSCON") && m.st.FanMode != "" {
+		fan += dimSt.Render(" " + strings.ToLower(m.st.FanMode))
+	}
+	if sparks {
+		cpu += sparkPart(&m.hCPU, tempSpan, true)
+		rsx += sparkPart(&m.hRSX, tempSpan, true)
+		fan += sparkPart(&m.hFan, fanSpan, false)
+	}
+	return cpu + "   " + rsx + "   " + fan + "   " +
+		dimSt.Render("HDD ") + hddVal(m.st.HDDFreeGB) + "   " +
+		dimSt.Render("MEM ") + memVal(m.st.MemFreeKB)
+}
+
+func sparkPart(s *series, minSpan int, withTrend bool) string {
+	vals := s.samples()
+	sp := spark(vals, sparkW, minSpan)
+	if sp == "" {
+		return ""
+	}
+	out := " " + dimSt.Render(sp)
+	if withTrend {
+		out += trendMark(trend(vals))
+	}
+	return out
+}
+
+// trendMark colors by consequence, not by direction: a climb is the thing you
+// might have to act on, so it takes the warn color, while cooling is good news
+// and stays dim. A move inside the noise band gets no mark at all.
+func trendMark(d int) string {
+	switch {
+	case d >= trendMin:
+		return warnSt.Render("↗")
+	case d <= -trendMin:
+		return dimSt.Render("↘")
+	}
+	return ""
+}
+
 // boxEdge draws "╭─ left ────── right ─╮"-style border lines, ANSI-aware.
 func boxEdge(width int, b lipgloss.Style, lc, rc string, left, right string) string {
 	s := b.Render(lc + "─")
@@ -722,9 +1118,17 @@ func boxMid(width int, b lipgloss.Style, left, right string) string {
 	return line + strings.Repeat(" ", pad) + rseg + tail
 }
 
+// noVal is what an absent field renders as. Every metric formatter routes
+// through it, so a webMAN markup change shows up as a visible gap in the
+// dashboard instead of a confident, healthy-looking zero.
+func noVal() string { return dimSt.Render("—") }
+
 // fanVal: 40% manual is the community-recommended normal on HEN, and SYSCON
 // is fine "if it stays under 70% in games" — plain <50, yellow 50–69, red 70+.
 func fanVal(pct int) string {
+	if pct == unknown {
+		return noVal()
+	}
 	v := fmt.Sprintf("%d%%", pct)
 	switch {
 	case pct >= 70:
@@ -738,6 +1142,9 @@ func fanVal(pct int) string {
 // hddVal: a dual-layer PS3 ISO runs up to ~45GB — under 60G free means one
 // big game left, under 20G means none.
 func hddVal(gb float64) string {
+	if gb == unknown {
+		return noVal()
+	}
 	v := fmt.Sprintf("%.0fG", gb)
 	switch {
 	case gb < 20:
@@ -752,6 +1159,9 @@ func hddVal(gb float64) string {
 // in-game is normal since the game owns the RAM. Only genuinely tight values
 // color: yellow <512K, red <256K.
 func memVal(kb int) string {
+	if kb == unknown {
+		return noVal()
+	}
 	v := fmt.Sprintf("%.1fM", float64(kb)/1024)
 	switch {
 	case kb < 256:
@@ -778,28 +1188,32 @@ func shortFW(fw string) string {
 	return out
 }
 
-// fmtClock compresses webMAN's HH:MM:SS to "1h31m" / "31m" / "45s".
+// fmtClock compresses webMAN's HH:MM:SS to "1h31m" / "31m" / "45s". Anything
+// that isn't a clock is passed through rather than rendered as a confident
+// "0s" — same reasoning as unknown vs 0 on the metrics.
 func fmtClock(c string) string {
-	parts := strings.Split(c, ":")
-	if len(parts) != 3 {
+	if strings.Count(c, ":") != 2 {
 		return c
 	}
-	h, _ := strconv.Atoi(parts[0])
-	mi, _ := strconv.Atoi(parts[1])
-	s, _ := strconv.Atoi(parts[2])
-	switch {
-	case h > 0:
-		return fmt.Sprintf("%dh%02dm", h, mi)
-	case mi > 0:
-		return fmt.Sprintf("%dm", mi)
-	}
-	return fmt.Sprintf("%ds", s)
+	return fmtDur(clockSecs(c))
 }
 
 // tabLine is the single separator line: console tabs (chronological) on the
 // left, filter state / cursor position on the right.
 // ── ⟨ PSX · 1 ⟩⟨ PS3 · 21 ⟩ ─────────────── 16/21 ──
 func (m *model) tabLine() string {
+	// the thermal screen borrows the tab strip as its own title bar — the
+	// console tabs mean nothing while the list is hidden
+	if m.thermalOn {
+		left := dimSt.Render("── ") + tabOnSt.Render(" thermals ") + dimSt.Render(" ")
+		right := fmt.Sprintf(" alarm %d° · window %s ", m.alarm, fmtDur(int(m.interval.Seconds())*histLen))
+		fill := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
+		if fill < 0 {
+			fill = 0
+		}
+		return left + dimSt.Render(strings.Repeat("─", fill)) + dimSt.Render(right) + dimSt.Render("──")
+	}
+
 	var tabs strings.Builder
 	for i, c := range m.consoles {
 		label := fmt.Sprintf(" %s · %d ", c, m.counts[i])
@@ -823,6 +1237,9 @@ func (m *model) tabLine() string {
 	case len(m.order) > 0:
 		pos = fmt.Sprintf(" %d/%d ", m.cursor+1, len(m.order))
 	}
+	if m.sortRecent { // alphabetical is the default, so only the other one is named
+		pos = " recent ·" + pos
+	}
 	fill := m.width - lipgloss.Width(left) - lipgloss.Width(pos) - 2
 	if fill < 0 {
 		fill = 0
@@ -833,17 +1250,22 @@ func (m *model) tabLine() string {
 // PS3 thermal reality (PSX-Place/GBAtemp consensus, webMAN's own fan target
 // is 68°): 60s–low 70s is normal gaming. Plain below 70, yellow 70–77,
 // red at 78+ (or the alarm threshold if set lower).
-func tempPart(name string, v int, alarm int) string {
+func tempVal(v, alarm int) string {
+	if v == unknown {
+		return noVal()
+	}
 	val := fmt.Sprintf("%d°", v)
 	switch {
 	case v >= alarm || v >= 78:
-		val = critSt.Render(val)
+		return critSt.Render(val)
 	case v >= 70:
-		val = warnSt.Render(val)
-	default:
-		val = okSt.Render(val)
+		return warnSt.Render(val)
 	}
-	return dimSt.Render(name+" ") + val
+	return okSt.Render(val)
+}
+
+func tempPart(name string, v int, alarm int) string {
+	return dimSt.Render(name+" ") + tempVal(v, alarm)
 }
 
 func (m *model) renderList() string {
@@ -878,10 +1300,22 @@ func (m *model) renderRow(gi int, sel bool) string {
 	if m.mounted(g) {
 		mark = " ● mounted"
 	}
+	// the play column is sized once for the whole library and reserved on
+	// every row, so titles don't go ragged between played and unplayed games
+	played := ""
+	if m.playColW > 0 {
+		if s, ok := m.hist.stat(g); ok {
+			played = fmtDur(s.Secs)
+		}
+		played = fmt.Sprintf("%*s", m.playColW, played)
+	}
 
 	// stable title column: as wide as the longest title, shrunk only if the
 	// window can't fit it
 	avail := w - 2 - numW - 2 - 1 - 11 - len(" x mounted") - 1
+	if m.playColW > 0 {
+		avail -= m.playColW + 2 // +2 keeps it off the mounted mark
+	}
 	tw := clamp(m.titleColW, 10, avail)
 	title := truncPad(g.Title, tw)
 
@@ -894,8 +1328,11 @@ func (m *model) renderRow(gi int, sel bool) string {
 		if mark != "" {
 			b.WriteString(selOkSt.Render(mark))
 		}
-		if pad := w - lipgloss.Width(b.String()); pad > 0 {
+		if pad := w - lipgloss.Width(b.String()) - lipgloss.Width(played); pad > 0 {
 			b.WriteString(selMainSt.Render(strings.Repeat(" ", pad)))
+		}
+		if played != "" {
+			b.WriteString(selDimSt.Render(played))
 		}
 		return b.String()
 	}
@@ -903,6 +1340,12 @@ func (m *model) renderRow(gi int, sel bool) string {
 	out := "  " + dimSt.Render(num) + "  " + title + " " + dimSt.Render(idCol)
 	if mark != "" {
 		out += " " + okSt.Render("● mounted")
+	}
+	if played != "" {
+		if pad := w - lipgloss.Width(out) - lipgloss.Width(played); pad > 0 {
+			out += strings.Repeat(" ", pad)
+		}
+		out += dimSt.Render(played)
 	}
 	return out
 }
@@ -938,6 +1381,13 @@ func (m *model) artPanel() string {
 		center.Bold(true).Render(g.Title),
 		center.Render(dimSt.Render(meta)),
 	}
+	if s, ok := m.hist.stat(g); ok {
+		parts = append(parts, center.Render(dimSt.Render(
+			fmt.Sprintf("%s · %d %s", fmtDur(s.Secs), s.Sessions, plural(s.Sessions, "session")))))
+		if a := fmtAgo(s.Last); a != "" {
+			parts = append(parts, center.Render(dimSt.Render("last "+a)))
+		}
+	}
 	if m.mounted(g) {
 		parts = append(parts, center.Render(okSt.Render("● mounted")))
 	}
@@ -965,11 +1415,29 @@ func (m *model) footer() string {
 	if m.flash != "" {
 		return m.bookend(warnSt.Render(m.flash))
 	}
-	keys := "⏎ mount/launch · u eject · p play · ⇥ console · / filter · m popup · g reload · r refresh · S/R power · q quit"
-	if m.filterQ != "" {
-		keys = "esc clear filter · " + keys
+	if m.thermalOn {
+		return m.bookend(dimSt.Render("↑↓ (or +/−) fan speed · f fan mode · r refresh · esc back"))
 	}
-	return m.bookend(dimSt.Render(keys))
+	// Widest form that fits: a clipped keybar loses whichever keys happen to
+	// sit at the end, rather than the ones you're least likely to need.
+	variants := []string{
+		"⏎ mount/launch · u eject · p play · ⇥ console · / filter · s sort · t thermals · m popup · g reload · r refresh · S/R power · q quit",
+		"⏎ mount · p play · u eject · ⇥ console · / filter · s sort · t thermals · q quit",
+		"⏎ mount · p play · / filter · s sort · t thermals · q quit",
+		"⏎ mount · / filter · t thermals · q quit",
+	}
+	prefix := ""
+	if m.filterQ != "" {
+		prefix = "esc clear · "
+	}
+	keys := variants[len(variants)-1]
+	for _, v := range variants {
+		if lipgloss.Width(prefix+v)+5 <= m.width {
+			keys = v
+			break
+		}
+	}
+	return m.bookend(dimSt.Render(prefix + keys))
 }
 
 // bookend wraps content in the "── content ────" rule vocabulary.
