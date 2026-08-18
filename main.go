@@ -29,6 +29,27 @@ func versionString() string {
 	return fmt.Sprintf("ps3top %s (%s)", version, commit)
 }
 
+// keysHelp rides along on --help: the keybar documents the keys too, but only
+// from inside the TUI, and the narrow-terminal keybar can't fit them all.
+// This is the one place every key is listed.
+const keysHelp = `
+Keys (TUI):
+  ↑↓/jk move · ⇥/←→ console tab · ⏎ mount (mounted → launch) · p play
+  u eject · / fuzzy filter · s sort alpha↔recent · m popup message on the TV
+  r refresh status+game list · g rescan library (webMAN re-scans the ISO dirs)
+  t thermal screen (there: ↑↓/+/− fan step · f fan mode · r refresh · esc back)
+  S shutdown · R restart · q quit
+`
+
+// usage is flag.CommandLine's Usage — split out so the suite can render it
+// without driving main through a --help parse.
+func usage() {
+	out := flag.CommandLine.Output()
+	fmt.Fprintf(out, "Usage: ps3top [flags]\n\nFlags:\n")
+	flag.PrintDefaults()
+	fmt.Fprint(out, keysHelp)
+}
+
 func main() {
 	host := flag.String("host", os.Getenv("PS3TOP_HOST"), "PS3 address (default: auto-discover; env PS3TOP_HOST)")
 	interval := flag.Duration("interval", 15*time.Second, "status poll interval (min 5s)")
@@ -37,6 +58,7 @@ func main() {
 	once := flag.Bool("once", false, "print status once and exit (no TUI)")
 	stats := flag.Bool("stats", false, "print play history and exit (no console needed)")
 	ver := flag.Bool("version", false, "print version")
+	flag.CommandLine.Usage = usage
 	flag.Parse()
 
 	if *ver {

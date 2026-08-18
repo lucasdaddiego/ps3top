@@ -135,6 +135,29 @@ func TestKeybarFitsWidth(t *testing.T) {
 	}
 }
 
+// The refresh keys must survive down to ordinary terminal widths — they used
+// to live only in the full bar, which needs ~137 cols, so the keys most worth
+// discovering (a just-copied ISO won't appear without g) were the ones the
+// keybar never showed anyone.
+func TestKeybarNamesTheRefreshKeys(t *testing.T) {
+	for _, c := range []struct {
+		w    int
+		want []string
+	}{
+		{80, []string{"r refresh"}},
+		{100, []string{"r refresh", "g rescan"}},
+		{120, []string{"r refresh", "g rescan"}},
+		{160, []string{"r refresh", "g rescan"}},
+	} {
+		m := liveModel(t, c.w)
+		for _, key := range c.want {
+			if !strings.Contains(m.footer(), key) {
+				t.Errorf("width %d: keybar doesn't name %q:\n%s", c.w, key, m.footer())
+			}
+		}
+	}
+}
+
 // A parse break has to look like a parse break, not like a cold console.
 func TestMissingMetricsRenderAsGaps(t *testing.T) {
 	m := liveModel(t, 120)

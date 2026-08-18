@@ -144,31 +144,135 @@ func TestFanCommandRoundTrip(t *testing.T) {
 	}
 }
 
-func TestMainViewRefreshAndReloadKeys(t *testing.T) {
+// r refreshes everything on screen — the status poll AND the games list. It
+// used to re-poll status only, leaving the list to a separate key nobody
+// remembered; one refresh key that skips half the screen isn't a refresh key.
+func TestRefreshKeyFetchesStatusAndGames(t *testing.T) {
 	m := liveModel(t, 120)
 	m.cli = liveServer(t)
 
-	if _, cmd := m.handleKey(key("r")); cmd == nil {
-		t.Error("r didn't refresh")
+	_, cmd := m.handleKey(key("r"))
+	if cmd == nil {
+		t.Fatal("r did nothing")
 	}
-	m.inFlight = true
-	if _, cmd := m.handleKey(key("r")); cmd != nil {
-		t.Error("r polled on top of a request in flight")
-	}
-	m.inFlight = false
-	_, reload := m.handleKey(key("g"))
-	if reload == nil {
-		t.Fatal("g didn't reload the library")
-	}
-	m = exec(t, m, reload)
+	m = exec(t, m, cmd)
 	if len(m.games) != 22 {
-		t.Errorf("g reloaded %d games", len(m.games))
+		t.Errorf("r reloaded %d games, want the library", len(m.games))
 	}
 
 	// keys arrive through Update in the real runtime, not handleKey directly
 	mm, _ := m.Update(key("t"))
 	if !mm.(*model).thermalOn {
 		t.Error("a key routed through Update didn't reach handleKey")
+	}
+}
+
+// With a status request already in flight, r must not stack a second poll on
+// top of it — but the games re-fetch is an idempotent read outside the gate,
+// so THAT still goes out, and the poll is owed rather than dropped.
+func TestRefreshKeyDefersTheStatusPollWhileBusy(t *testing.T) {
+	m := liveModel(t, 120)
+	m.cli = liveServer(t)
+	m.inFlight = true
+
+	_, cmd := m.handleKey(key("r"))
+	if cmd == nil {
+		t.Fatal("r dropped the games re-fetch along with the deferred poll")
+	}
+	if !m.needStatus {
+		t.Error("the deferred status poll wasn't remembered")
+	}
+	m = exec(t, m, cmd)
+	if len(m.games) != 22 {
+		t.Errorf("r while busy reloaded %d games, want the library", len(m.games))
+	}
+}
+
+// g's rescan taken to the wire: webMAN must be asked to rebuild its game
+// database (?xmb — the variant that regenerates the XML we read), because
+// re-fetching mygames.xml alone can never surface an ISO FTP'd over after
+// boot. The reload that follows arrives as its own scheduled message.
+func TestRescanReachesTheConsoleAndReloads(t *testing.T) {
+	games, err := os.ReadFile("testdata/mygames.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/refresh.ps3") {
+			got = r.URL.RequestURI()
+		}
+		w.Write(games)
+	}))
+	defer srv.Close()
+
+	m := liveModel(t, 120)
+	m.cli = NewClient(strings.TrimPrefix(srv.URL, "http://"))
+
+	_, cmd := m.handleKey(key("g"))
+	if cmd == nil {
+		t.Fatal("g did nothing")
+	}
+	if !m.actBusy {
+		t.Error("rescan didn't claim the action gate — a mount could race the scan")
+	}
+	if !strings.Contains(m.flash, "rescan") {
+		t.Errorf("no immediate feedback for a seconds-long round trip: %q", m.flash)
+	}
+	m = exec(t, m, cmd)
+	if got != "/refresh.ps3?xmb" {
+		t.Errorf("rescan hit %q, want /refresh.ps3?xmb", got)
+	}
+	if m.actBusy {
+		t.Error("gate still held after the rescan replied")
+	}
+	if !strings.Contains(m.flash, "✓") {
+		t.Errorf("rescan didn't report success: %q", m.flash)
+	}
+
+	// the settle tick delivers reloadMsg; from there the list must re-read
+	mm, reload := m.Update(reloadMsg{})
+	m = exec(t, mm.(*model), reload)
+	if len(m.games) != 22 {
+		t.Errorf("reload after rescan loaded %d games, want the library", len(m.games))
+	}
+}
+
+// A failed rescan must free the gate (or every action key is dead until
+// restart) and say what happened.
+func TestRescanFailureFreesTheGate(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "nope", http.StatusInternalServerError)
+	}))
+	defer srv.Close()
+
+	m := liveModel(t, 120)
+	m.cli = NewClient(strings.TrimPrefix(srv.URL, "http://"))
+
+	_, cmd := m.handleKey(key("g"))
+	m = exec(t, m, cmd)
+	if m.actBusy {
+		t.Error("failed rescan left the action gate held")
+	}
+	if !strings.Contains(m.flash, "rescan") {
+		t.Errorf("failure not surfaced: %q", m.flash)
+	}
+}
+
+// Like every other state-changing command, a rescan queues behind nothing —
+// it refuses while one is out, with an explanation rather than silence.
+func TestRescanRespectsTheActionGate(t *testing.T) {
+	m := liveModel(t, 120)
+	m.cli = liveServer(t)
+	m.actBusy = true
+
+	before := m.flash
+	m.handleKey(key("g"))
+	if m.flash == before || m.flash == "" {
+		t.Error("g while busy was silently swallowed")
+	}
+	if !m.actBusy {
+		t.Error("busy refusal somehow released the gate")
 	}
 }
 

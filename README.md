@@ -14,7 +14,7 @@ game, and mount/launch/eject of the game library, in one dashboard. Built
 ▌ 16  Sample Game™ 2             [MOCK30982] ● mounted                                        38h12m
   17  Sample Quest: The Beginni… [MOCK00103]                                                   6h04m
   18  Fixture Storm™             [MOCK98137]
-── ⏎ mount · p play · u eject · ⇥ console · / filter · s sort · q quit ─────────────────────────────
+── ⏎ mount · p play · u eject · / filter · s sort · t thermals · r refresh · g rescan · q quit ─────
 ```
 
 (A real terminal also carries the cover art panel on the right, at ≥84 cols.)
@@ -35,7 +35,8 @@ From a clone: `make install` puts a stripped release build in `~/.bin`;
 
 Flags: `--host` (default: auto-discover; env `PS3TOP_HOST`) · `--interval`
 (15s, min 5s) · `--alarm` (80°C) · `--no-art` · `--once` · `--stats` ·
-`--version`.
+`--version`. `--help` also prints the TUI key cheat sheet — the in-app keybar
+shows the same keys, but a narrow terminal can't fit them all.
 
 With no `--host`, ps3top finds the console itself: it sweeps the machine's
 private IPv4 /24s (TCP :80, then a `GET /cpursx.ps3` that must answer with the
@@ -238,8 +239,19 @@ leaderboard with peak temps and HDD drift since the first record.
 `home`/`end` jump · `tab`/`←→`/`hl` switch console tab · `⏎` mount (already
 mounted → launch) · `p` play = mount+launch · `u` eject · `/` fuzzy filter
 (`esc` clears, scoped to the active tab) · `s` sort alphabetical ↔ recently
-played · `t` thermal screen · `m` popup message on the TV · `g` reload games ·
-`r` refresh now · `S`/`R` shutdown/restart (confirmed) · `q` quit.
+played · `t` thermal screen · `m` popup message on the TV · `r` refresh now
+(status **and** game list) · `g` rescan the library · `S`/`R` shutdown/restart
+(confirmed) · `q` quit.
+
+`r` vs `g` matters when you've just FTP'd an ISO over: `mygames.xml` is static
+until webMAN rebuilds it, so `r` shows you what webMAN already knows, while `g`
+fires `/refresh.ps3?xmb` (the sMAN skin's own Refresh action) to make webMAN
+re-scan the ISO folders and regenerate the XML, then reloads the list once
+webMAN has had a beat to finish writing it. The rescan holds the same one-at-a-
+time action gate as mount/eject — the console is genuinely busy while it scans —
+and gets a 30s timeout instead of the usual 6s, since it walks every ISO
+directory. Neither key loses your place: a reload re-finds the selected game by
+identity instead of dumping the cursor back to row 1.
 
 Inside the thermal screen: `+`/`−` (or `↑↓`) fan speed in manual mode, target
 temperature in dynamic — the footer names whichever it currently is · `f` fan
@@ -284,14 +296,17 @@ skips the confirm.
   checked for a real PNG header and sane dimensions before being cached or
   handed to the terminal's image decoder.
 - Game list from the **static** `mygames.xml` (`/dev_hdd0/xmlhost/game_plugin/`),
-  fetched at startup and on `g` only. It's XMB pseudo-XML (`<>value</>`), hence
-  the regex parser.
+  fetched at startup and on `r`. It's XMB pseudo-XML (`<>value</>`), hence the
+  regex parser. `g` first asks webMAN to rebuild it (`/refresh.ps3?xmb`, 30s
+  timeout — a rescan walks every ISO directory) and reloads 1.5s after the
+  reply, in case the XML is still being written when webMAN answers.
 - Covers (`/dev_hdd0/tmp/wmtmp/*.PNG`, 320×176) fetched once per game, cached in
   `~/Library/Caches/ps3top/covers/`.
 - Actions: `/mount_ps3/<path>` · `/mount_ps3/unmount` · `/play.ps3` (launch
   mounted) · `/play.ps3/<path>` (mount+launch) · `/popup.ps3/<text>` ·
-  `/shutdown.ps3` · `/restart.ps3` · `/cpursx.ps3?up|dn|mode` (fan; the reply
-  is the new status page, so these cost one request and no follow-up poll).
+  `/refresh.ps3?xmb` (library rescan) · `/shutdown.ps3` · `/restart.ps3` ·
+  `/cpursx.ps3?up|dn|mode` (fan; the reply is the new status page, so these
+  cost one request and no follow-up poll).
 - webMAN also runs a PS3MAPI text protocol on **port 7887** (temps, IDPS,
   process list, memory peek/poke) — unused here, but it's the door for any
   future tool that needs live memory access.
@@ -320,6 +335,31 @@ Kitty graphics protocol in Unicode-placeholder mode (kitty & Ghostty; detected
 via `TERM`/`TERM_PROGRAM`). Images are transmitted once with `q=2` and rendered
 as placeholder cells, which survive bubbletea redraws. Unsupported terminal or
 `--no-art` → text-only, no errors.
+
+## Source layout
+
+One flat `package main`, deliberately — the tests live in-package and exercise
+internals directly, and an `internal/` split would buy this binary nothing. The
+files carve it by concern instead (the same map lives in `doc.go`):
+
+| file | owns |
+|---|---|
+| `main.go` | CLI flags, `--once` and `--stats` entry points |
+| `model.go` | the bubbletea model, its messages, list mechanics |
+| `update.go` | `Init`/`Update`/`handleKey`, network commands, the action gate |
+| `view.go` | every frame of the main screen, styles, shared formatters |
+| `session.go` | what each poll feeds: metric samples, play sessions |
+| `fan.go` | the serialized fan-command queue and its delta reports |
+| `thermal.go` | the thermal screen (`t`) that fan.go's queue drives |
+| `webman.go` | HTTP client + parsers for webMAN's pages |
+| `discover.go` | the LAN sweep behind auto-discovery |
+| `history.go` | the NDJSON play log and `--stats` |
+| `spark.go` | metric rings + sparkline renderer |
+| `art.go` / `cover.go` | kitty-graphics plumbing / cover fetch + cache |
+
+Each `*_test.go` matches its file, plus `state_test.go`/`edges_test.go` for
+model transitions and end-to-end key→wire paths, and `ui_test.go` for whole
+frames.
 
 ## Tests
 

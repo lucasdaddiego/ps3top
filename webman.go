@@ -157,8 +157,9 @@ func NewClient(host string) *Client {
 		host: host,
 		http: &http.Client{
 			// Hard backstop only — every caller passes a context with the real
-			// deadline (status 6s, games/covers 8s), which also bounds body reads.
-			Timeout: 10 * time.Second,
+			// deadline (status 6s, games/covers 8s, rescan 30s — the long pole,
+			// and why this sits at 35s), which also bounds body reads.
+			Timeout: 35 * time.Second,
 			Transport: &http.Transport{
 				DisableKeepAlives: true,
 				DialContext:       (&net.Dialer{Timeout: 2 * time.Second}).DialContext,
@@ -229,6 +230,12 @@ func (c *Client) Launch(ctx context.Context) error        { return c.fire(ctx, "
 func (c *Client) Play(ctx context.Context, g Game) error  { return c.fire(ctx, "/play.ps3"+g.Path) }
 func (c *Client) Shutdown(ctx context.Context) error      { return c.fire(ctx, "/shutdown.ps3") }
 func (c *Client) Restart(ctx context.Context) error       { return c.fire(ctx, "/restart.ps3") }
+
+// Rescan asks webMAN to re-scan the ISO folders and rebuild the XMB game XML —
+// the only way a freshly FTP'd ISO shows up, since mygames.xml is static until
+// webMAN regenerates it. ?xmb is what the sMAN skin's own Refresh menu item
+// sends; the plain /refresh.ps3 rebuilds the DB but not the XML we read.
+func (c *Client) Rescan(ctx context.Context) error { return c.fire(ctx, "/refresh.ps3?xmb") }
 
 func (c *Client) Popup(ctx context.Context, msg string) error {
 	return c.fire(ctx, "/popup.ps3/"+url.PathEscape(msg))

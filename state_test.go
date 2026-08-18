@@ -105,6 +105,38 @@ func TestGamesFetchFailureFlashes(t *testing.T) {
 	}
 }
 
+// A games reload must keep the cursor on the game it was on — indexes don't
+// survive the rebuild, so the selection is re-found by identity. Without this,
+// every r (which now reloads the list too) dumped you back to row 1.
+func TestGamesReloadKeepsTheCursorOnItsGame(t *testing.T) {
+	m := liveModel(t, 120)
+	m.moveCursor(1) // sit on "Alpha", not row 1
+	sel, ok := m.selectedGame()
+	if !ok || sel.Title != "Alpha" {
+		t.Fatalf("fixture cursor on %q, want Alpha", sel.Title)
+	}
+
+	// the reload surfaces a new ISO that sorts ABOVE the selection
+	reloaded := []Game{
+		{Title: "Aardvark Quest", ID: "MOCK00009", Category: "hdd0/PS3ISO", Path: "/dev_hdd0/PS3ISO/AQ.iso"},
+		m.games[1], // Alpha
+		m.games[0], // Sample Game™ 2
+	}
+	mm, _ := m.Update(gamesMsg{games: reloaded})
+	m = mm.(*model)
+
+	if got, _ := m.selectedGame(); got.Title != "Alpha" {
+		t.Errorf("cursor landed on %q after the reload, want Alpha", got.Title)
+	}
+
+	// a game that vanished can't be re-found; the cursor falls back to the top
+	mm, _ = m.Update(gamesMsg{games: reloaded[:1]})
+	m = mm.(*model)
+	if m.cursor != 0 {
+		t.Errorf("cursor = %d after its game vanished, want 0", m.cursor)
+	}
+}
+
 func TestFetchGamesAndActionErrorsSurface(t *testing.T) {
 	m := liveModel(t, 120)
 	m.cli = NewClient("127.0.0.1:1") // nothing listening

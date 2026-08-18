@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"flag"
 	"net/http"
 	"net/http/httptest"
@@ -167,6 +168,28 @@ func runMain(t *testing.T, args ...string) string {
 func TestMainVersion(t *testing.T) {
 	if out := runMain(t, "--version"); !strings.Contains(out, "ps3top") {
 		t.Errorf("--version printed %q", out)
+	}
+}
+
+// --help carries the TUI key cheat sheet — the keybar can't show every key at
+// every width, and --help is where you look before launching. Rendered via
+// usage() directly: driving main through a --help parse would fall through to
+// a real LAN sweep under the test flag set's ContinueOnError.
+func TestUsageNamesTheTUIKeys(t *testing.T) {
+	prev := flag.CommandLine
+	t.Cleanup(func() { flag.CommandLine = prev })
+	flag.CommandLine = flag.NewFlagSet("ps3top", flag.ContinueOnError)
+
+	var buf bytes.Buffer
+	flag.CommandLine.SetOutput(&buf)
+	usage()
+	out := buf.String()
+	for _, want := range []string{
+		"r refresh", "g rescan", "t thermal", "u eject", "s sort", "q quit",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("--help doesn't name %q:\n%s", want, out)
+		}
 	}
 }
 
