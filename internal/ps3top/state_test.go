@@ -199,7 +199,8 @@ func TestOfflineCachedHostSweepsOncePerOutage(t *testing.T) {
 
 	// a typed --host (no cache path) never sweeps
 	m.hostCache = ""
-	if _, cmd := m.Update(statusMsg{err: errors.New("dial: refused")}); cmd != nil {
+	m.Update(statusMsg{err: errors.New("dial: refused")})
+	if m.scanning {
 		t.Error("a --host address was second-guessed by a sweep")
 	}
 }
@@ -649,7 +650,7 @@ func TestFilterAndSortKeys(t *testing.T) {
 	m.cursor = 2
 	want := m.order[2]
 	m.handleKey(key("s"))
-	if !m.sortRecent {
+	if m.sortMode != sortRecent {
 		t.Error("s didn't switch to recently-played")
 	}
 	if m.order[m.cursor] != want {
@@ -1145,5 +1146,63 @@ func TestFmtSize(t *testing.T) {
 		if got := fmtSize(n); got != want {
 			t.Errorf("fmtSize(%d) = %q, want %q", n, got, want)
 		}
+	}
+}
+
+// s cycles alphabetical → recently played → largest first → alphabetical.
+// The size sort puts the biggest ISO on top, unsized entries after in their
+// list order, names itself on the tab strip, and is the only sort that
+// shows the size on the row — the cover gets that width back in the others.
+func TestSortBySize(t *testing.T) {
+	m := liveModel(t, 160)
+	m.artOn = true
+	m.games = []Game{
+		{Title: "Alpha", ID: "MOCK00001", Category: "hdd0/PS3ISO", Path: "/dev_hdd0/PS3ISO/Alpha.iso"},
+		{Title: "Bravo", ID: "MOCK00002", Category: "hdd0/PS3ISO", Path: "/dev_hdd0/PS3ISO/Bravo.iso"},
+		{Title: "Charlie", ID: "MOCK00003", Category: "hdd0/PS3ISO", Path: "/dev_hdd0/PS3ISO/Charlie.iso"},
+		{Title: "Delta", ID: "MOCK00004", Category: "hdd0/PS3ISO", Path: "/dev_hdd0/PS3ISO/Delta.iso"},
+	}
+	m.secNums = []int{1, 2, 3, 4}
+	m.sizes = map[string]int64{
+		"/dev_hdd0/PS3ISO/Alpha.iso":   3 << 30,
+		"/dev_hdd0/PS3ISO/Bravo.iso":   12 << 30,
+		"/dev_hdd0/PS3ISO/Charlie.iso": 7 << 30,
+	}
+	m.applyFilter("")
+	need := m.listNeed()
+
+	m.handleKey(key("s"))
+	if m.sortMode != sortRecent {
+		t.Fatalf("first s = %v, want recent", m.sortMode)
+	}
+	m.handleKey(key("s"))
+	if m.sortMode != sortSize {
+		t.Fatalf("second s = %v, want size", m.sortMode)
+	}
+	var titles []string
+	for _, gi := range m.order {
+		titles = append(titles, m.games[gi].Title)
+	}
+	if got := strings.Join(titles, " "); got != "Bravo Charlie Alpha Delta" {
+		t.Errorf("size order = %q, want largest first, unsized last", got)
+	}
+	if !strings.Contains(m.tabLine(), "size ·") {
+		t.Errorf("tab strip doesn't name the sort:\n%s", m.tabLine())
+	}
+	if row := m.renderRow(m.order[0], false); !strings.Contains(row, "12.0G") {
+		t.Errorf("size sort row has no size:\n%s", row)
+	}
+	if row := m.renderRow(m.order[3], false); strings.Contains(row, "G") && !strings.Contains(row, "Delta") {
+		t.Errorf("unsized row shows a size:\n%s", row)
+	}
+	if m.listNeed() != need+1+sizeColW {
+		t.Errorf("listNeed = %d in the size sort, want %d", m.listNeed(), need+1+sizeColW)
+	}
+	m.handleKey(key("s"))
+	if m.sortMode != sortAlpha {
+		t.Errorf("third s = %v, want alphabetical", m.sortMode)
+	}
+	if row := m.renderRow(m.order[0], false); strings.Contains(row, "12.0G") {
+		t.Errorf("alphabetical row still shows a size:\n%s", row)
 	}
 }

@@ -344,6 +344,15 @@ func (m *model) roomFor() int {
 	return int(m.st.HDDFreeGB * float64(1<<30) / float64(median))
 }
 
+// plainTemp is a temperature for a notification: "82°", or "—" when the
+// sensor didn't read.
+func plainTemp(v int) string {
+	if v == unknown {
+		return "—"
+	}
+	return fmt.Sprintf("%d°", v)
+}
+
 // checkPatch asks Sony once per session whether the running title has a
 // newer patch than the version webMAN reports. Off the console's gate —
 // it's a request to the internet, not to the PS3 — and never repeated for
@@ -412,13 +421,21 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case statusMsg:
 		m.inFlight, m.needStatus = false, false
 		if msg.err != nil {
+			wasInGame := m.online && m.st.InGame
 			m.online = false
 			m.lastErr = msg.err
 			// record the outage as gaps so the sparkline's x axis stays
 			// honest — an offline stretch is blank, not silently compressed
 			m.pushSamples(Status{CPUTemp: unknown, RSXTemp: unknown, FanPct: unknown}, m.slotsPolled())
+			var cmds []tea.Cmd
+			if wasInGame {
+				// a console that goes quiet mid-game has crashed, hard-off'd
+				// or lost the network — all worth hearing about from another
+				// window; a console going quiet on the XMB is just switched off
+				cmds = append(cmds, notifyCmd("console went offline during "+m.st.GameTitle))
+			}
 			// an auto-discovered address that doesn't answer may have moved
-			return m, m.sweepLAN()
+			return m, tea.Batch(append(cmds, m.sweepLAN())...)
 		}
 		wasOnline := m.online
 		m.online, m.haveStatus, m.lastErr = true, true, nil
@@ -435,7 +452,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		nowAlarming := msg.st.CPUTemp >= m.alarm || msg.st.RSXTemp >= m.alarm
 		if nowAlarming && !m.alarming {
-			cmds = append(cmds, tea.Raw("\a")) // the bell, once, on the way into the alarm
+			// the bell, once, on the way into the alarm — and a notification
+			// for the window that isn't in front
+			cmds = append(cmds, tea.Raw("\a"), notifyCmd(fmt.Sprintf("CPU %s · RSX %s — over the %d° alarm",
+				plainTemp(msg.st.CPUTemp), plainTemp(msg.st.RSXTemp), m.alarm)))
 		}
 		m.alarming = nowAlarming
 
@@ -718,10 +738,26 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmd, m.ensureCover())
 	}
 
+	// screen: help. Any of the ways out closes it; ? from the thermal screen
+	// opens it too, and returns there.
+	if m.helpOn {
+		switch msg.String() {
+		case "?", "esc", "q", "enter":
+			m.helpOn = false
+			if !m.thermalOn {
+				return m, m.ensureCover()
+			}
+		}
+		return m, nil
+	}
+
 	// screen: thermals. Fan control lives here rather than on the main keybar —
 	// one key instead of four, and the controls sit under their own feedback.
 	if m.thermalOn {
 		switch msg.String() {
+		case "?":
+			m.helpOn = true
+			return m, nil
 		case "t", "esc", "q":
 			m.thermalOn, m.thermalPage = false, 0
 			return m, m.ensureCover() // the cover for the selected row comes back
@@ -804,9 +840,14 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "shift+tab", "left", "h":
 		return m, m.switchTab(-1)
 	case "s":
-		m.sortRecent = !m.sortRecent
+		m.sortMode = (m.sortMode + 1) % 3
 		m.reorder()
-		return m, m.ensureCover()
+		// the size column comes and goes with the sort, and the cover box
+		// is sized from what the rows need
+		return m, tea.Batch(m.replaceCovers(), m.ensureCover())
+	case "?":
+		m.helpOn = true
+		return m, nil
 	case "/":
 		m.filterTyping = true
 		m.filterInput.SetValue(m.filterQ)

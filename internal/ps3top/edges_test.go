@@ -453,7 +453,7 @@ func TestTabLineStates(t *testing.T) {
 		t.Errorf("filtered tab line doesn't show the query:\n%s", got)
 	}
 	m.filterQ = ""
-	m.sortRecent = true
+	m.sortMode = sortRecent
 	if got := m.tabLine(); !strings.Contains(got, "recent") {
 		t.Errorf("recent sort not flagged:\n%s", got)
 	}

@@ -19,6 +19,26 @@ const (
 	scrollMargin = 2 // rows kept visible above/below the cursor
 )
 
+// sortMode is what `s` cycles: alphabetical is the default and unnamed on
+// the tab strip; the other two are named there.
+type sortMode int
+
+const (
+	sortAlpha  sortMode = iota
+	sortRecent          // most recently played first, unplayed after in list order
+	sortSize            // largest ISO first, unknown sizes after in list order
+)
+
+func (s sortMode) String() string {
+	switch s {
+	case sortRecent:
+		return "recent"
+	case sortSize:
+		return "size"
+	}
+	return ""
+}
+
 type (
 	tickMsg       struct{}
 	clearFlashMsg struct{ gen int }
@@ -160,10 +180,11 @@ type model struct {
 	sizes      map[string]int64
 	dupFlashed bool // the duplicate-ISO flash fires once per session
 
-	hist       *history
-	sortRecent bool
-	playColW   int  // width reserved for the per-row play total (0 = no history)
-	thermalOn  bool // `t` — full-body temperature screen with fan control
+	hist      *history
+	sortMode  sortMode
+	helpOn    bool // `?` — the key reference, full-body like the thermal screen
+	playColW  int  // width reserved for the per-row play total (0 = no history)
+	thermalOn bool // `t` — full-body temperature screen with fan control
 	// the thermal screen's second page (`h` there): the long-term log, read
 	// on entry, folded into weeks
 	thermalPage int
@@ -265,7 +286,11 @@ func (m *model) artBox() (cols, rows int) {
 // cursor bar, number, the longest title, the ID, and room for the mounted
 // mark. Anything the window has beyond it is the cover's.
 func (m *model) listNeed() int {
-	return 2 + max(1, m.numW) + 2 + max(10, m.titleColW) + 1 + idColW + len(" ● mounted") + 1
+	n := 2 + max(1, m.numW) + 2 + max(10, m.titleColW) + 1 + idColW + len(" ● mounted") + 1
+	if m.sortMode == sortSize {
+		n += 1 + sizeColW
+	}
+	return n
 }
 
 func (m *model) aspect() float64 {
@@ -324,7 +349,8 @@ func (m *model) applyFilter(q string) {
 			pool = append(pool, i)
 		}
 	}
-	if m.sortRecent {
+	switch m.sortMode {
+	case sortRecent:
 		// stable, so games with no history keep the alphabetical order they
 		// arrived in and just fall below the played ones
 		sort.SliceStable(pool, func(i, j int) bool {
@@ -337,6 +363,17 @@ func (m *model) applyFilter(q string) {
 				return false
 			}
 			return si.Last.After(sj.Last)
+		})
+	case sortSize:
+		// largest first — the "which one do I delete for room" order —
+		// with the unsized ones keeping their alphabetical order at the end
+		sort.SliceStable(pool, func(i, j int) bool {
+			si, oki := m.sizes[m.games[pool[i]].Path]
+			sj, okj := m.sizes[m.games[pool[j]].Path]
+			if oki != okj {
+				return oki
+			}
+			return si > sj
 		})
 	}
 	if q == "" {

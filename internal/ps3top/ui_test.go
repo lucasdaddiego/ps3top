@@ -139,45 +139,6 @@ func TestHeaderDegradesInPriorityOrder(t *testing.T) {
 	}
 }
 
-// The keybar is the other thing that used to run off the edge; it has a short
-// form so the trailing keys aren't the ones silently clipped away.
-func TestKeybarFitsWidth(t *testing.T) {
-	for _, w := range []int{72, 90, 110, 160} {
-		m := liveModel(t, w)
-		if got := lipgloss.Width(m.footer()); got > w {
-			t.Errorf("width %d: keybar is %d cols\n%s", w, got, m.footer())
-		}
-		for _, key := range []string{"s sort", "t thermals"} {
-			if !strings.Contains(m.footer(), key) {
-				t.Errorf("width %d: keybar lost %q", w, key)
-			}
-		}
-	}
-}
-
-// The refresh keys must survive down to ordinary terminal widths — they used
-// to live only in the full bar, which needs ~137 cols, so the keys most worth
-// discovering (a just-copied ISO won't appear without g) were the ones the
-// keybar never showed anyone.
-func TestKeybarNamesTheRefreshKeys(t *testing.T) {
-	for _, c := range []struct {
-		w    int
-		want []string
-	}{
-		{80, []string{"r refresh"}},
-		{100, []string{"r refresh", "g rescan"}},
-		{120, []string{"r refresh", "g rescan"}},
-		{160, []string{"r refresh", "g rescan"}},
-	} {
-		m := liveModel(t, c.w)
-		for _, key := range c.want {
-			if !strings.Contains(m.footer(), key) {
-				t.Errorf("width %d: keybar doesn't name %q:\n%s", c.w, key, m.footer())
-			}
-		}
-	}
-}
-
 // A parse break has to look like a parse break, not like a cold console.
 func TestMissingMetricsRenderAsGaps(t *testing.T) {
 	m := liveModel(t, 120)
@@ -251,7 +212,7 @@ func TestViewRendersInEveryState(t *testing.T) {
 		"filtering":     func(m *model) { m.filterTyping = true; m.applyFilter("zzz") },
 		"confirming":    func(m *model) { m.confirm = &confirmAction{label: "eject", danger: true} },
 		"alarming":      func(m *model) { m.alarming = true; m.st.CPUTemp = 82 },
-		"recent sort":   func(m *model) { m.sortRecent = true; m.applyFilter("") },
+		"recent sort":   func(m *model) { m.sortMode = sortRecent; m.applyFilter("") },
 		"degraded":      func(m *model) { m.st.CPUTemp, m.st.RSXTemp = unknown, unknown },
 		"thermal":       func(m *model) { m.thermalOn = true },
 		"thermal cold":  func(m *model) { m.thermalOn = true; m.hCPU, m.hRSX, m.hFan = series{}, series{}, series{} },
@@ -612,4 +573,56 @@ func abs(n int) int {
 		return -n
 	}
 	return n
+}
+
+// The footer carries no keybar any more — one never fit every key at any
+// width, so it always hid the ones worth discovering. It points at the help
+// screen, which names every key, fits every width, and comes and goes on ?.
+func TestFooterPointsAtTheHelpScreen(t *testing.T) {
+	for _, w := range []int{72, 90, 120, 160} {
+		m := liveModel(t, w)
+		if w < 120 {
+			// one column below ~120 cols: taller, so a taller terminal
+			m.height, m.listH = 45, 45-headerH-footerH
+		}
+		if foot := m.footer(); !strings.Contains(foot, "? help") || lipgloss.Width(foot) > w {
+			t.Errorf("width %d: footer %q", w, foot)
+		}
+		m.applyFilter("sam")
+		if !strings.Contains(m.footer(), "esc clear") {
+			t.Error("filter state dropped from the footer")
+		}
+
+		m.handleKey(key("?"))
+		if !m.helpOn {
+			t.Fatal("? didn't open the help screen")
+		}
+		frame := m.frame()
+		for i, line := range strings.Split(frame, "\n") {
+			if lipgloss.Width(line) > w {
+				t.Errorf("width %d: help line %d is %d cols", w, i, lipgloss.Width(line))
+			}
+		}
+		for _, s := range helpSections {
+			for _, k := range s.keys {
+				if !strings.Contains(frame, k.keys) {
+					t.Errorf("width %d: help screen doesn't name %q", w, k.keys)
+				}
+			}
+		}
+		if !strings.Contains(m.tabLine(), "help") {
+			t.Error("tab strip doesn't name the screen")
+		}
+		m.handleKey(key("esc"))
+		if m.helpOn {
+			t.Error("esc didn't close the help screen")
+		}
+		// from the thermal screen, ? opens it and esc returns there
+		m.handleKey(key("t"))
+		m.handleKey(key("?"))
+		m.handleKey(key("esc"))
+		if m.helpOn || !m.thermalOn {
+			t.Error("help from the thermal screen didn't return to it")
+		}
+	}
 }

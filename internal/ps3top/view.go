@@ -64,9 +64,12 @@ func (m *model) frame() string {
 	}
 	head := m.header()
 	var body string
-	if m.thermalOn {
+	switch {
+	case m.helpOn:
+		body = m.helpView()
+	case m.thermalOn:
 		body = m.thermalView() // takes the full width; no art panel beside it
-	} else {
+	default:
 		body = m.renderList()
 		if m.artShown() {
 			body = m.withArtPanel(body)
@@ -374,8 +377,12 @@ func fmtClock(c string) string {
 // left, filter state / cursor position on the right.
 // ── ⟨ PSX · 1 ⟩⟨ PS3 · 21 ⟩ ─────────────── 16/21 ──
 func (m *model) tabLine() string {
-	// the thermal screen borrows the tab strip as its own title bar — the
-	// console tabs mean nothing while the list is hidden
+	// the help and thermal screens borrow the tab strip as their own title
+	// bar — the console tabs mean nothing while the list is hidden
+	if m.helpOn {
+		left := dimSt.Render("── ") + tabOnSt.Render(" help ") + dimSt.Render(" ")
+		return left + rule(dimSt, m.width-lipgloss.Width(left)-2) + dimSt.Render("──")
+	}
 	if m.thermalOn {
 		title, right := " thermals ", fmt.Sprintf(" alarm %d° · window %s ", m.alarm, fmtDur(int(m.interval.Seconds())*histLen))
 		if m.thermalPage == 1 {
@@ -408,8 +415,8 @@ func (m *model) tabLine() string {
 	case len(m.order) > 0:
 		pos = fmt.Sprintf(" %d/%d ", m.cursor+1, len(m.order))
 	}
-	if m.sortRecent { // alphabetical is the default, so only the other one is named
-		pos = " recent ·" + pos
+	if name := m.sortMode.String(); name != "" { // alphabetical is the default and goes unnamed
+		pos = " " + name + " ·" + pos
 	}
 	return left + rule(dimSt, m.width-lipgloss.Width(left)-lipgloss.Width(pos)-2) + dimSt.Render(pos+"──")
 }
@@ -454,7 +461,11 @@ func (m *model) renderList() string {
 }
 
 // idColW is the ID column: title IDs are nine characters, every one.
-const idColW = 9
+// sizeColW fits "12.3G", the widest a PS3 ISO gets.
+const (
+	idColW   = 9
+	sizeColW = 5
+)
 
 // rowStyles is the palette a list row is drawn with. The selected row carries
 // a background across its whole width, so every segment — including the
@@ -511,6 +522,15 @@ func (m *model) renderRow(gi int, sel bool) string {
 	b.WriteString(st.dim.Render(num + "  "))
 	b.WriteString(st.main.Render(title + " "))
 	b.WriteString(st.dim.Render(idCol))
+	// the size column only exists in the size sort — it's what that sort is
+	// about, and the cover gets the width back in the others
+	if m.sortMode == sortSize {
+		size := ""
+		if n, ok := m.sizes[g.Path]; ok {
+			size = fmtSize(n)
+		}
+		b.WriteString(st.dim.Render(fmt.Sprintf(" %*s", sizeColW, size)))
+	}
 	if mark != "" {
 		b.WriteString(st.ok.Render(mark))
 	}
@@ -656,6 +676,9 @@ func (m *model) footer() string {
 	if m.flash != "" {
 		return m.bookend(warnSt.Render(m.flash))
 	}
+	if m.helpOn {
+		return m.bookend(dimSt.Render("esc back"))
+	}
 	if m.thermalOn && m.thermalPage == 1 {
 		return m.bookend(dimSt.Render("h live · esc back"))
 	}
@@ -665,30 +688,14 @@ func (m *model) footer() string {
 		// while the fan row two lines above correctly said "target"
 		return m.bookend(dimSt.Render(m.fanHint() + " (or +/−) · " + m.fanModeHint() + " · h history · r refresh · esc back"))
 	}
-	// Widest form that fits: a clipped keybar loses whichever keys happen to
-	// sit at the end, rather than the ones you're least likely to need. The
-	// refresh keys ride well down the ladder — they're what a just-FTP'd ISO
-	// sends you looking for, and the full bar only fits a ~137-col terminal.
-	variants := []string{
-		"⏎ mount/launch · u eject · p play · x quit game · ⇥ console · / filter · s sort · t thermals · m popup · r refresh · g rescan · S/R power · q quit",
-		"⏎ mount · p play · u eject · ⇥ console · / filter · s sort · t thermals · r refresh · g rescan · q quit",
-		"⏎ mount · p play · u eject · / filter · s sort · t thermals · r refresh · g rescan · q quit",
-		"⏎ mount · p play · / filter · s sort · t thermals · r refresh · q quit",
-		"⏎ mount · p play · / filter · s sort · t thermals · q quit",
-		"⏎ mount · / filter · t thermals · q quit",
-	}
+	// No keybar: it never fit every key at any width, so it always hid the
+	// ones worth discovering. The reference is a screen now, and the footer
+	// only says where it is — plus the one key that's state, not reference.
 	prefix := ""
 	if m.filterQ != "" {
 		prefix = "esc clear · "
 	}
-	keys := variants[len(variants)-1]
-	for _, v := range variants {
-		if lipgloss.Width(prefix+v)+5 <= m.width {
-			keys = v
-			break
-		}
-	}
-	return m.bookend(dimSt.Render(prefix + keys))
+	return m.bookend(dimSt.Render(prefix + "? help"))
 }
 
 // bookend wraps content in the "── content ────" rule vocabulary.

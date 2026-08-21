@@ -62,11 +62,23 @@ func TestUsageNamesTheTUIKeys(t *testing.T) {
 	flag.CommandLine.SetOutput(&buf)
 	usage()
 	out := buf.String()
-	for _, want := range []string{
-		"r refresh", "g rescan", "t thermal", "u eject", "s sort", "q quit",
-	} {
+	// every key the table knows is on a line of its own, key then meaning
+	for _, s := range helpSections {
+		for _, k := range s.keys {
+			found := false
+			for _, line := range strings.Split(out, "\n") {
+				if strings.HasPrefix(strings.TrimSpace(line), k.keys) && strings.Contains(line, k.what) {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("--help doesn't name %q %q:\n%s", k.keys, k.what, out)
+			}
+		}
+	}
+	for _, want := range []string{"rescan", "thermals", "eject", "sort", "quit", "this screen"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("--help doesn't name %q:\n%s", want, out)
+			t.Errorf("--help doesn't mention %q", want)
 		}
 	}
 }

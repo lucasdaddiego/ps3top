@@ -216,7 +216,7 @@ func TestRecencySort(t *testing.T) {
 		t.Errorf("alphabetical order = %v, want %v", m.order, want)
 	}
 
-	m.sortRecent = true
+	m.sortMode = sortRecent
 	m.applyFilter("")
 	if want := []int{1, 2, 0}; !eqInts(m.order, want) {
 		t.Errorf("recent order = %v, want %v (Beta, Gamma, then unplayed Alpha)", m.order, want)
@@ -253,7 +253,7 @@ func TestReorderKeepsCursorOnSameGame(t *testing.T) {
 
 	m.applyFilter("")
 	m.cursor = 2 // Gamma, last alphabetically
-	m.sortRecent = true
+	m.sortMode = sortRecent
 	m.reorder()
 
 	if g, ok := m.selectedGame(); !ok || g.ID != "MOCK3" {

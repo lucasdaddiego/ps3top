@@ -16,6 +16,8 @@
 //	webman.go   HTTP client + parsers for webMAN's pages
 //	discover.go LAN sweep that finds the console when --host is absent
 //	patch.go    Sony's title-update index (patch-available mark), pinned root
+//	help.go     the key table behind the ? screen and --help
+//	notify.go   desktop notifications for the alarm and a mid-game outage
 //	history.go  the NDJSON play log behind the play totals
 //	spark.go    fixed-size metric rings and the sparkline renderer
 //	thermallog.go  the per-minute thermal log behind the thermal screen's history page

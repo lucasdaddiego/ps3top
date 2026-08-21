@@ -36,8 +36,10 @@ targets (run, test, lint, tidy, clean).
 
 Flags: `--host` (default: auto-discover; env `PS3TOP_HOST`) · `--interval`
 (15s, min 5s) · `--alarm` (80°C) · `--no-art` · `--version`. It's a TUI and
-nothing else — no one-shot or scripting mode. `--help` also prints the TUI key cheat sheet — the in-app keybar
-shows the same keys, but a narrow terminal can't fit them all.
+nothing else — no one-shot or scripting mode. `--help` prints the key
+reference; `?` inside the app shows the same table as a screen (the footer
+used to carry a keybar, which never fit every key at any width and so always
+hid the ones worth discovering).
 
 With no `--host`, ps3top finds the console itself: it sweeps the machine's
 private IPv4 /24s (TCP :80, then a `GET /cpursx.ps3` that must answer with the
@@ -60,6 +62,14 @@ therefore webMAN and this tool — is dead until two controller presses anyway.
 The DS3's PS button is the wake button.) Note:
 after a cold boot, webMAN only appears once HEN is active — with HEN auto-boot
 the dashboard recovers by itself, otherwise enable HEN from the XMB first.
+
+Two things reach you when the window isn't in front, as a desktop
+notification (`terminal-notifier` if installed, else `osascript`; `notify-send`
+on Linux) on top of the bell and the red frame: a sensor crossing the alarm,
+and the console going quiet in the middle of a game — a crash, a hard-off or
+a lost network, all worth knowing from another window. A console going quiet
+on the XMB is just switched off and says nothing. Same triggers as before,
+one more sink, nothing periodic.
 
 Metric scales (researched, values plain when healthy — color means attention):
 - **Temps** (PSX-Place/GBAtemp consensus; webMAN's own fan target is 68°):
@@ -212,8 +222,7 @@ by the opposite key. The mode is rendered large because leaving the console in
 manual at a low percentage is the one way to get this wrong.
 
 When the header can't hold everything, it gives up the least live thing first:
-full lifetime counters → `∞ Nd` only → sparklines → metric readings last. The
-keybar has a short form for the same reason.
+full lifetime counters → `∞ Nd` only → sparklines → metric readings last.
 
 ## Thermal history (`h` inside `t`)
 
@@ -260,8 +269,10 @@ hidden, the art panel gains
 `↑↓`/`jk` move (smooth scroll, 2-row margin) · `pgup/pgdn`/`ctrl+u/d` page ·
 `home`/`end` jump · `tab`/`←→`/`hl` switch console tab · `⏎` mount (already
 mounted → launch) · `p` play = mount+launch · `u` eject · `/` fuzzy filter
-(`esc` clears, scoped to the active tab) · `s` sort alphabetical ↔ recently
-played · `x` quit the running game to the XMB · `X` restart it (both only
+(`esc` clears, scoped to the active tab) · `s` sort alphabetical → recently
+played → largest ISO first (the size sort is the one that puts the size on
+the row; the others give that width to the cover) · `?` help screen · `x`
+quit the running game to the XMB · `X` restart it (both only
 while a game is known to be running, both behind the red confirm) · `t`
 thermal screen · `m` popup message on the TV · `r` refresh now
 (status **and** game list) · `g` rescan the library · `S`/`R` shutdown/restart
@@ -429,6 +440,7 @@ thousand lines of tests for nothing. The files carve it by concern instead
 | `webman.go` | HTTP client + parsers for webMAN's pages |
 | `discover.go` | the LAN sweep behind auto-discovery |
 | `patch.go` | Sony's title-update index, behind a pinned root |
+| `help.go` / `notify.go` | the key table behind `?` and `--help` / desktop notifications |
 | `history.go` | the NDJSON play log behind the play totals |
 | `spark.go` | metric rings + sparkline renderer |
 | `thermallog.go` | the per-minute thermal log and its weekly fold |

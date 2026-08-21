@@ -26,25 +26,14 @@ func (b Build) String() string {
 	return fmt.Sprintf("ps3top %s (%s)", b.Version, b.Commit)
 }
 
-// keysHelp rides along on --help: the keybar documents the keys too, but only
-// from inside the TUI, and the narrow-terminal keybar can't fit them all.
-// This is the one place every key is listed.
-const keysHelp = `
-Keys (TUI):
-  ↑↓/jk move · ⇥/←→ console tab · ⏎ mount (mounted → launch) · p play
-  u eject · / fuzzy filter · s sort alpha↔recent · m popup message on the TV
-  r refresh status+game list · g rescan library (webMAN re-scans the ISO dirs)
-  t thermal screen (there: ↑↓/+/− fan step · f fan mode · h long-term history · r refresh · esc back)
-  x quit the running game to the XMB · X restart it · S shutdown · R restart · q quit
-`
-
 // usage is flag.CommandLine's Usage — split out so the suite can render it
-// without driving main through a --help parse.
+// without driving main through a --help parse. The keys come from the same
+// table as the in-app ? screen.
 func usage() {
 	out := flag.CommandLine.Output()
 	fmt.Fprintf(out, "Usage: ps3top [flags]\n\nFlags:\n")
 	flag.PrintDefaults()
-	fmt.Fprint(out, keysHelp)
+	fmt.Fprint(out, helpText())
 }
 
 // Run is the program: flags, discovery, and the TUI until it quits. It parses
