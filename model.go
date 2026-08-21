@@ -221,7 +221,16 @@ func (m *model) clearFlashLater() tea.Cmd {
 func (m *model) artShown() bool { return m.artOn && m.width >= 84 }
 
 // artBox is the cover box at the current terminal size.
-func (m *model) artBox() (cols, rows int) { return artBox(m.width, m.listH, m.aspect()) }
+func (m *model) artBox() (cols, rows int) {
+	return artBox(m.width, m.listH, m.aspect(), m.listNeed())
+}
+
+// listNeed is the width a row takes to show whole beside the art panel:
+// cursor bar, number, the longest title, the ID, and room for the mounted
+// mark. Anything the window has beyond it is the cover's.
+func (m *model) listNeed() int {
+	return 2 + max(1, m.numW) + 2 + max(10, m.titleColW) + 1 + idColW + len(" ● mounted") + 1
+}
 
 func (m *model) aspect() float64 {
 	if m.cellAspect > 0 {

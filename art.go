@@ -27,7 +27,7 @@ import (
 // portrait cover at that width would already be filling it.
 const (
 	artMinCols  = 24
-	artMaxCols  = 48 // the diacritics table is the ceiling
+	artMaxCols  = 64 // the diacritics table is the ceiling
 	artMinRows  = 7
 	artTextRows = 3 // under the box: title, meta, play total + last played
 	placeholder = '\U0010EEEE'
@@ -37,9 +37,10 @@ const (
 const portraitW, portraitH = 260, 300
 
 // artBox is the cover box for a terminal of this width and list height, at a
-// given cell aspect.
-func artBox(width, listH int, aspect float64) (cols, rows int) {
-	cols = clamp(width/3, artMinCols, artMaxCols)
+// given cell aspect, beside a list that needs listW columns to show its rows
+// whole: every column the list doesn't need goes to the cover.
+func artBox(width, listH int, aspect float64, listW int) (cols, rows int) {
+	cols = clamp(width-listW-4, artMinCols, artMaxCols) // 4: box border + gap
 	// taller than a portrait cover at this width and no cover could use the
 	// rows; and a short window gives the width back, since a box wider than
 	// its rows can fill only costs the list columns
@@ -78,7 +79,8 @@ func fitCover(w, h, cols, rows int, aspect float64) (int, int) {
 	return c, r
 }
 
-// First rows/cols of kitty's rowcolumn-diacritics table — enough for an
+// First rows/cols of kitty's rowcolumn-diacritics table (gen/rowcolumn-
+// diacritics.txt in the kitty source, same order) — enough for an
 // artMaxCols-wide placement.
 var diacritics = []rune{
 	0x0305, 0x030D, 0x030E, 0x0310, 0x0312, 0x033D, 0x033E, 0x033F,
@@ -87,6 +89,8 @@ var diacritics = []rune{
 	0x036A, 0x036B, 0x036C, 0x036D, 0x036E, 0x036F, 0x0483, 0x0484,
 	0x0485, 0x0486, 0x0487, 0x0592, 0x0593, 0x0594, 0x0595, 0x0597,
 	0x0598, 0x0599, 0x059C, 0x059D, 0x059E, 0x059F, 0x05A0, 0x05A1,
+	0x05A8, 0x05A9, 0x05AB, 0x05AC, 0x05AF, 0x05C4, 0x0610, 0x0611,
+	0x0612, 0x0613, 0x0614, 0x0615, 0x0616, 0x0617, 0x0657, 0x0658,
 }
 
 // Only kitty and Ghostty implement Unicode-placeholder (U=1) placements —

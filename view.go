@@ -434,6 +434,9 @@ func (m *model) renderList() string {
 	return strings.Join(out, "\n")
 }
 
+// idColW is the ID column: title IDs are nine characters, every one.
+const idColW = 9
+
 // rowStyles is the palette a list row is drawn with. The selected row carries
 // a background across its whole width, so every segment — including the
 // padding — goes through a style; the plain row's "styles" are mostly the
@@ -458,10 +461,7 @@ func (m *model) renderRow(gi int, sel bool) string {
 	}
 
 	num := fmt.Sprintf("%*d", numW, m.secNums[gi])
-	idCol := strings.Repeat(" ", 11)
-	if g.ID != "" {
-		idCol = "[" + g.ID + "]"
-	}
+	idCol := fmt.Sprintf("%-*s", idColW, g.ID) // aligned, so no brackets to delimit it
 	mark := ""
 	if m.mounted(g) {
 		mark = " ● mounted"
@@ -481,7 +481,7 @@ func (m *model) renderRow(gi int, sel bool) string {
 
 	// stable title column: as wide as the longest title, shrunk only if the
 	// window can't fit it
-	avail := w - 2 - numW - 2 - 1 - 11 - len(" x mounted") - 1
+	avail := w - 2 - numW - 2 - 1 - idColW - len(" x mounted") - 1
 	if played != "" {
 		avail -= m.playColW + 2 // +2 keeps it off the mounted mark
 	}

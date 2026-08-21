@@ -137,18 +137,18 @@ func TestFitCoverUsesTheCellAspect(t *testing.T) {
 // box takes the rows the panel's text leaves — but never more than a portrait
 // cover at that width can fill, and never past the diacritics table.
 func TestArtBoxScalesWithTheTerminal(t *testing.T) {
+	const list = 60 // what a typical library's rows need
 	for _, c := range []struct {
 		width, listH int
 		cols, rows   int
 	}{
-		{84, 20, 26, 15},                  // the art threshold: 28 cols on offer, 15 rows, width back to 26
-		{120, 23, 31, 18},                 // 40 cols on offer, 18 rows, width given back to 31
-		{125, 25, 35, 20},                 // a 125×32 Ghostty window
-		{200, 30, 43, 25},                 // wide and tall: 66 → 48 cols, 25 rows, width back to 43
+		{84, 20, artMinCols, 14},          // the art threshold: 20 cols left, floored at 24, 14 rows
+		{120, 23, 31, 18},                 // 56 cols left, 18 rows, width given back to 31
+		{128, 25, 35, 20},                 // a 128×32 window: 64 left, 20 rows, width back to 35
+		{200, 40, 61, 35},                 // wide and tall: 136 → 64 cols on offer, 35 rows, width back to 61
 		{300, 12, artMinCols, artMinRows}, // very wide but short: rows floored, and the width given back
-		{300, 60, artMaxCols, 28},         // the ceiling: 48 cols, capped at the portrait's 28 rows
 	} {
-		cols, rows := artBox(c.width, c.listH, 2)
+		cols, rows := artBox(c.width, c.listH, 2, list)
 		if cols != c.cols || rows != c.rows {
 			t.Errorf("artBox(%d, %d) = %d×%d, want %d×%d", c.width, c.listH, cols, rows, c.cols, c.rows)
 		}
@@ -163,11 +163,16 @@ func TestArtBoxScalesWithTheTerminal(t *testing.T) {
 	}
 	// a taller cell aspect means fewer rows for the same width once the
 	// height isn't the limit: 41 cols of portrait is 24 rows at 1:2, 20 at 1:2.4
-	if _, rows := artBox(125, 40, 2); rows != 24 {
+	if _, rows := artBox(105, 40, 2, list); rows != 24 {
 		t.Errorf("1:2 cells: box has %d rows, want 24", rows)
 	}
-	if _, rows := artBox(125, 40, 2.4); rows != 20 {
+	if _, rows := artBox(105, 40, 2.4, list); rows != 20 {
 		t.Errorf("1:2.4 cells: box has %d rows, want 20", rows)
+	}
+	// a library with long titles keeps its rows whole; the cover takes the
+	// rest, down to the floor
+	if cols, _ := artBox(128, 25, 2, 100); cols != artMinCols {
+		t.Errorf("long titles: box is %d cols, want the %d floor", cols, artMinCols)
 	}
 }
 

@@ -323,8 +323,9 @@ skips the confirm.
   than guessed at. Each cover is placed
   at its own aspect inside the art box rather than stretched to it, since
   kitty scales an image to exactly the cells it's given — a portrait cover
-  stays portrait. The box is sized from the terminal (a third of the width,
-  24–48 columns, as many rows as the three text lines under it leave) and the placement
+  stays portrait. The box takes every column the list doesn't need for
+  its widest row (24–64 columns) and as many rows as the three text lines
+  under it leave and the placement
   is shaped at the terminal's *measured* cell aspect (`TIOCGWINSZ` pixel
   fields; kitty and Ghostty fill them in, 1:2 assumed otherwise) — the
   terminal letterboxes inside a placement of the wrong shape, and that strip
