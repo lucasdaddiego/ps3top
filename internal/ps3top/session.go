@@ -1,4 +1,4 @@
-package main
+package ps3top
 
 // What each successful poll feeds: the metric history rings, and the open
 // play session that becomes one history.ndjson line when the game stops.

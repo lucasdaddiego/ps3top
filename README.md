@@ -30,8 +30,9 @@ go install github.com/lucasdaddiego/ps3top@latest   # → ~/go/bin/ps3top
 ps3top              # auto-discovers the console
 ```
 
-From a clone: `make install` puts a stripped release build in `~/.bin`;
-`make` lists the other targets (build, run, test, lint, tidy, clean).
+From a clone: `make install` puts a stripped release build in `~/.bin`,
+`make build` a stamped one in `bin/` (gitignored); `make` lists the other
+targets (run, test, lint, tidy, clean).
 
 Flags: `--host` (default: auto-discover; env `PS3TOP_HOST`) · `--interval`
 (15s, min 5s) · `--alarm` (80°C) · `--no-art` · `--version`. It's a TUI and
@@ -378,13 +379,16 @@ Unsupported terminal or `--no-art` → text-only, no errors.
 
 ## Source layout
 
-One flat `package main`, deliberately — the tests live in-package and exercise
-internals directly, and an `internal/` split would buy this binary nothing. The
-files carve it by concern instead (the same map lives in `doc.go`):
+`main.go` at the root is ten lines — the build stamp handed into
+`ps3top.Run` — so `go install …/ps3top@latest` keeps working. The program is
+`internal/ps3top`, one flat package deliberately: the tests live in-package
+and exercise internals directly, and a split by concern would churn five
+thousand lines of tests for nothing. The files carve it by concern instead
+(the same map lives in `doc.go`):
 
 | file | owns |
 |---|---|
-| `main.go` | flags, discovery hand-off, program start |
+| `run.go` | flags, discovery hand-off, program start |
 | `model.go` | the bubbletea model, its messages, list mechanics |
 | `update.go` | `Init`/`Update`/`handleKey`, network commands, the action gate |
 | `view.go` | every frame of the main screen, styles, shared formatters |
@@ -403,7 +407,7 @@ frames.
 
 ## Tests
 
-`go test` runs the parsers against the fixtures in `testdata/` (in-game
+`go test` runs the parsers against the fixtures in `internal/ps3top/testdata/` (in-game
 `cpursx.ps3`, `mygames.xml` with the game-ID-in-title setting on, and
 `mygames_info_ids.xml` with it off plus MM COVERS). The fixtures are **synthetic**: byte-faithful to
 real webMAN (sMAN skin) output in structure, but every game title, title ID,

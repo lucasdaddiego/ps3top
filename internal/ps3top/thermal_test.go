@@ -1,4 +1,4 @@
-package main
+package ps3top
 
 import (
 	"net/http"

@@ -1,4 +1,4 @@
-package main
+package ps3top
 
 // webMAN MOD HTTP client + parsers for the sMAN-skinned build (1.47.48).
 // Etiquette: webMAN's web server has ~4 session slots — every request uses a

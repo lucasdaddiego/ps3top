@@ -1,4 +1,4 @@
-package main
+package ps3top
 
 // The thermal screen (`t`): big CPU/RSX readouts, a multi-row plot of the
 // history rings the header sparklines already fill, and fan control sitting

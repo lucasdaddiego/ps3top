@@ -1,2 +1,2 @@
-# built binary
-/ps3top
+# local builds (make build); installs go to ~/.bin
+/bin/

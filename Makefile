@@ -2,6 +2,7 @@
 # Run `make` (or `make help`) to list targets.
 
 BINARY      := ps3top
+BIN_DIR     := bin
 INSTALL_DIR := $(HOME)/.bin
 
 # Version metadata, stamped in at link time. A plain `go build` / `go run .`
@@ -22,8 +23,9 @@ RELEASE := -trimpath -ldflags "-s -w $(STAMP)"
 help: ## List the targets (the default goal)
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-8s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-build: ## Compile the binary into ./ps3top
-	go build -ldflags "$(STAMP)" -o $(BINARY) .
+build: ## Compile the binary into bin/ps3top
+	@mkdir -p $(BIN_DIR)
+	go build -ldflags "$(STAMP)" -o $(BIN_DIR)/$(BINARY) .
 
 run: ## Launch the TUI (auto-discovers the console)
 	go run .
@@ -46,5 +48,5 @@ install: ## Install a stripped release binary into ~/.bin
 	go build $(RELEASE) -o "$(INSTALL_DIR)/$(BINARY)" .
 	@echo "installed $(INSTALL_DIR)/$(BINARY)"
 
-clean: ## Remove the local build artifact
-	rm -f $(BINARY)
+clean: ## Remove the local build directory
+	rm -rf $(BIN_DIR)

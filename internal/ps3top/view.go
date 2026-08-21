@@ -1,4 +1,4 @@
-package main
+package ps3top
 
 // Every frame of the main screen: the status header, tab strip, game list,
 // art panel and footer, plus the styles and the small formatters they share

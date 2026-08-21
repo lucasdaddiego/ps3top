@@ -1,4 +1,4 @@
-package main
+package ps3top
 
 // The model: every piece of state the TUI owns, the messages that mutate it,
 // and the pure list mechanics (filter / sort / cursor / tabs). Anything that

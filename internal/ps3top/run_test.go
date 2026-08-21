@@ -1,4 +1,4 @@
-package main
+package ps3top
 
 import (
 	"bytes"
@@ -9,16 +9,12 @@ import (
 )
 
 func TestVersionString(t *testing.T) {
-	defer func(v, c, d string) { version, commit, date = v, c, d }(version, commit, date)
-
 	// an unstamped build says so rather than naming a release the source has
 	// long since moved past
-	version, commit, date = "dev", "none", "unknown"
-	if got := versionString(); !strings.Contains(got, "dev") || !strings.Contains(got, "unknown") {
+	if got := (Build{"dev", "none", "unknown"}).String(); !strings.Contains(got, "dev") || !strings.Contains(got, "unknown") {
 		t.Errorf("dev build prints %q", got)
 	}
-	version, commit, date = "v1.1.0", "abc1234", "2026-08-12T00:00:00Z"
-	got := versionString()
+	got := Build{"v1.1.0", "abc1234", "2026-08-12T00:00:00Z"}.String()
 	if !strings.Contains(got, "v1.1.0") || !strings.Contains(got, "abc1234") {
 		t.Errorf("stamped build prints %q", got)
 	}
@@ -40,7 +36,11 @@ func runMain(t *testing.T, args ...string) string {
 	flag.CommandLine = flag.NewFlagSet("ps3top", flag.ContinueOnError)
 	os.Args = append([]string{"ps3top"}, args...)
 
-	return captureStdout(t, main)
+	return captureStdout(t, func() {
+		if err := Run(Build{"v1.2.3", "abc1234", "2026-08-21T00:00:00Z"}); err != nil {
+			t.Errorf("Run: %v", err)
+		}
+	})
 }
 
 func TestMainVersion(t *testing.T) {

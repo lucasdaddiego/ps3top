@@ -1,4 +1,4 @@
-package main
+package ps3top
 
 // The async half of the model: every network command, the gate that keeps
 // webMAN to one console-state request at a time, and the Update/handleKey

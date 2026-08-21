@@ -1,4 +1,4 @@
-package main
+package ps3top
 
 // Metric history. ps3top already polls every interval all day, so keeping the
 // last histLen samples costs nothing extra on the wire and turns three

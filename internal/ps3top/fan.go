@@ -1,4 +1,4 @@
-package main
+package ps3top
 
 // The fan-command queue and its delta reports. The thermal screen
 // (thermal.go) is the UI that drives this; these are the rules for how

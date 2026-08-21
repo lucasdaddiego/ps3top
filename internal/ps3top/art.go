@@ -1,4 +1,4 @@
-package main
+package ps3top
 
 // Cover art via the kitty graphics protocol in Unicode-placeholder mode
 // (supported by kitty and Ghostty). Images are transmitted once (id-tagged,

@@ -2,10 +2,11 @@
 // interface. Status, temps, the running game, and mount/launch/eject of the
 // game library, polled gently enough to sit open all day.
 //
-// The binary is one flat package on purpose — the tests live in-package and
-// exercise internals directly. The map:
+// The program is one flat package on purpose — the tests live in-package and
+// exercise internals directly; main.go at the module root only carries the
+// build stamp into Run. The map:
 //
-//	main.go     flags, discovery hand-off, and the program start
+//	run.go      flags, discovery hand-off, and the program start
 //	model.go    the bubbletea model, its messages, and list mechanics
 //	update.go   Init/Update/handleKey and the network commands + action gate
 //	view.go     every frame of the main screen, styles, shared formatters
@@ -18,4 +19,4 @@
 //	spark.go    fixed-size metric rings and the sparkline renderer
 //	art.go      kitty-graphics cover plumbing (transmit/placeholder/cleanup)
 //	cover.go    cover fetch + on-disk PNG cache
-package main
+package ps3top

@@ -1,4 +1,4 @@
-package main
+package ps3top
 
 // Play history — the record the PS3 itself never keeps.
 //

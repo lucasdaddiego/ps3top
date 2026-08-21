@@ -1,4 +1,4 @@
-package main
+package ps3top
 
 // LAN auto-discovery. webMAN has no mDNS/SSDP announcer, so discovery is a
 // bounded sweep of the machine's private IPv4 /24s: TCP-dial :80, and for the
