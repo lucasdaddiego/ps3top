@@ -664,6 +664,10 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "R":
 		m.confirm = &confirmAction{label: "restart", danger: m.st.InGame, run: func(ctx context.Context) error { return cli.Restart(ctx) }}
 		return m, nil
+	case "x":
+		return m.inGameOnly("exit game", func(ctx context.Context) error { return cli.ExitGame(ctx) })
+	case "X":
+		return m.inGameOnly("restart game", func(ctx context.Context) error { return cli.ReloadGame(ctx) })
 	case "p":
 		g, ok := m.selectedGame()
 		if !ok {
@@ -683,6 +687,20 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 		return m.guarded("mount "+g.Title, func(ctx context.Context) error { return cli.Mount(ctx, g) })
 	}
+	return m, nil
+}
+
+// inGameOnly is for the two keys that only mean something with a game up —
+// quit it, restart it. They're always a red confirm: the game is running by
+// definition, and unsaved progress goes with it. With no game known to be
+// running they explain themselves rather than fire at the XMB, and with the
+// state unknown they don't guess.
+func (m *model) inGameOnly(label string, fn func(context.Context) error) (tea.Model, tea.Cmd) {
+	if !m.haveStatus || !m.online || !m.st.InGame {
+		m.flash = label + ": no game running"
+		return m, m.clearFlashLater()
+	}
+	m.confirm = &confirmAction{label: label, danger: true, run: fn}
 	return m, nil
 }
 

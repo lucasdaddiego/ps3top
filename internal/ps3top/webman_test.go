@@ -654,6 +654,8 @@ func TestActionEndpoints(t *testing.T) {
 		{"play", func() error { return cli.Play(ctx, game) }, "/play.ps3/dev_hdd0/PS3ISO/SampleGame2.iso"},
 		{"shutdown", func() error { return cli.Shutdown(ctx) }, "/shutdown.ps3"},
 		{"restart", func() error { return cli.Restart(ctx) }, "/restart.ps3"},
+		{"exit game", func() error { return cli.ExitGame(ctx) }, "/xmb.ps3$exit"},
+		{"restart game", func() error { return cli.ReloadGame(ctx) }, "/xmb.ps3$reloadgame"},
 		// the message is path-escaped, so spaces and slashes can't reshape the URL
 		{"popup", func() error { return cli.Popup(ctx, "hello there/x") }, "/popup.ps3/hello%20there%2Fx"},
 	}

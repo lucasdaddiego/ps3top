@@ -246,7 +246,9 @@ hidden, the art panel gains
 `home`/`end` jump · `tab`/`←→`/`hl` switch console tab · `⏎` mount (already
 mounted → launch) · `p` play = mount+launch · `u` eject · `/` fuzzy filter
 (`esc` clears, scoped to the active tab) · `s` sort alphabetical ↔ recently
-played · `t` thermal screen · `m` popup message on the TV · `r` refresh now
+played · `x` quit the running game to the XMB · `X` restart it (both only
+while a game is known to be running, both behind the red confirm) · `t`
+thermal screen · `m` popup message on the TV · `r` refresh now
 (status **and** game list) · `g` rescan the library · `S`/`R` shutdown/restart
 (confirmed) · `q` quit.
 
@@ -340,7 +342,8 @@ skips the confirm.
   instead of being re-requested on every visit; `r`/`g` retry it.
 - Actions: `/mount_ps3/<path>` · `/mount_ps3/unmount` · `/play.ps3` (launch
   mounted) · `/play.ps3/<path>` (mount+launch) · `/popup.ps3/<text>` ·
-  `/refresh.ps3?xmb` (library rescan) · `/shutdown.ps3` · `/restart.ps3` ·
+  `/refresh.ps3?xmb` (library rescan) · `/xmb.ps3$exit` (quit game to XMB)
+  · `/xmb.ps3$reloadgame` (restart game) · `/shutdown.ps3` · `/restart.ps3` ·
   `/cpursx.ps3?up|dn|mode` (fan; the reply is the new status page, so these
   cost one request and no follow-up poll).
 - webMAN also runs a PS3MAPI text protocol on **port 7887** (temps, IDPS,

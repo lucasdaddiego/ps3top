@@ -639,7 +639,7 @@ func (m *model) footer() string {
 	// refresh keys ride well down the ladder — they're what a just-FTP'd ISO
 	// sends you looking for, and the full bar only fits a ~137-col terminal.
 	variants := []string{
-		"⏎ mount/launch · u eject · p play · ⇥ console · / filter · s sort · t thermals · m popup · r refresh · g rescan · S/R power · q quit",
+		"⏎ mount/launch · u eject · p play · x quit game · ⇥ console · / filter · s sort · t thermals · m popup · r refresh · g rescan · S/R power · q quit",
 		"⏎ mount · p play · u eject · ⇥ console · / filter · s sort · t thermals · r refresh · g rescan · q quit",
 		"⏎ mount · p play · u eject · / filter · s sort · t thermals · r refresh · g rescan · q quit",
 		"⏎ mount · p play · / filter · s sort · t thermals · r refresh · q quit",

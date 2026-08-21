@@ -35,7 +35,7 @@ Keys (TUI):
   u eject · / fuzzy filter · s sort alpha↔recent · m popup message on the TV
   r refresh status+game list · g rescan library (webMAN re-scans the ISO dirs)
   t thermal screen (there: ↑↓/+/− fan step · f fan mode · r refresh · esc back)
-  S shutdown · R restart · q quit
+  x quit the running game to the XMB · X restart it · S shutdown · R restart · q quit
 `
 
 // usage is flag.CommandLine's Usage — split out so the suite can render it

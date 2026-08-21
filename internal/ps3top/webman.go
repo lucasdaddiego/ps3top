@@ -243,6 +243,12 @@ func (c *Client) Play(ctx context.Context, g Game) error  { return c.fire(ctx, "
 func (c *Client) Shutdown(ctx context.Context) error      { return c.fire(ctx, "/shutdown.ps3") }
 func (c *Client) Restart(ctx context.Context) error       { return c.fire(ctx, "/restart.ps3") }
 
+// ExitGame quits the running game back to the XMB; ReloadGame restarts it.
+// Both are the links webMAN's own status page hangs next to the running
+// title ("$exit" / "$reloadgame" — the $ is literal, not a shell variable).
+func (c *Client) ExitGame(ctx context.Context) error   { return c.fire(ctx, "/xmb.ps3$exit") }
+func (c *Client) ReloadGame(ctx context.Context) error { return c.fire(ctx, "/xmb.ps3$reloadgame") }
+
 // Rescan asks webMAN to re-scan the ISO folders and rebuild the XMB game XML —
 // the only way a freshly FTP'd ISO shows up, since mygames.xml is static until
 // webMAN regenerates it. ?xmb is what the sMAN skin's own Refresh menu item

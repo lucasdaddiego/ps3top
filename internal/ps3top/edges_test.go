@@ -866,3 +866,50 @@ func TestLoadHistoryPermissionDenied(t *testing.T) {
 		t.Error("loadHistory must always return a usable history")
 	}
 }
+
+// x and X act on the running game, so they only work when one is known to be
+// running — and then always behind the red confirm, since the game goes
+// with whatever it hadn't saved. On the XMB, or with the state unknown, they
+// say so instead of firing at nothing.
+func TestQuitAndRestartGameKeys(t *testing.T) {
+	for _, c := range []struct{ key, want string }{
+		{"x", "/xmb.ps3$exit"},
+		{"X", "/xmb.ps3$reloadgame"},
+	} {
+		var got string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if !strings.HasPrefix(r.URL.Path, "/cpursx") {
+				got = r.URL.RequestURI()
+			}
+			w.Write([]byte("webMAN CPU: 58°C"))
+		}))
+		m := liveModel(t, 120)
+		m.cli = NewClient(strings.TrimPrefix(srv.URL, "http://"))
+
+		// on the XMB: a flash, no prompt, no request
+		m.st.InGame = false
+		if _, cmd := m.handleKey(key(c.key)); m.confirm != nil || !strings.Contains(m.flash, "no game running") {
+			t.Errorf("%q on the XMB: confirm=%v flash=%q", c.key, m.confirm != nil, m.flash)
+		} else {
+			_ = cmd
+		}
+		// state unknown: same — the last reading can't be trusted either way
+		m.st.InGame, m.online = true, false
+		if _, _ = m.handleKey(key(c.key)); m.confirm != nil {
+			t.Errorf("%q with the console offline raised a prompt", c.key)
+		}
+		// in-game: red confirm, then the wire
+		m.online, m.st.InGame = true, true
+		m.flash = ""
+		_, cmd := m.handleKey(key(c.key))
+		if m.confirm == nil || !m.confirm.danger {
+			t.Fatalf("%q in-game didn't raise the red confirm", c.key)
+		}
+		_, cmd = m.handleKey(key("y"))
+		m = exec(t, m, cmd)
+		if got != c.want {
+			t.Errorf("%q hit %q, want %q", c.key, got, c.want)
+		}
+		srv.Close()
+	}
+}
