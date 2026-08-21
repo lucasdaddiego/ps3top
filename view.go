@@ -69,7 +69,13 @@ func (m *model) frame() string {
 	} else {
 		body = m.renderList()
 		if m.artShown() {
-			body = lipgloss.JoinHorizontal(lipgloss.Top, body, "  ", m.artPanel())
+			// the panel sits centered in the list's height rather than
+			// hanging from the top with the slack all underneath
+			panel := m.artPanel()
+			if top := (m.listH - lipgloss.Height(panel)) / 2; top > 0 {
+				panel = strings.Repeat("\n", top) + panel
+			}
+			body = lipgloss.JoinHorizontal(lipgloss.Top, body, "  ", panel)
 		}
 	}
 	body = lipgloss.NewStyle().Height(m.listH).MaxHeight(m.listH).Render(body)

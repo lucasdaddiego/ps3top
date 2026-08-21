@@ -200,7 +200,7 @@ func (m *model) replaceCovers() tea.Cmd {
 		if !ref.shown {
 			continue
 		}
-		c, r := fitCover(ref.w, ref.h, cols, rows)
+		c, r := fitCover(ref.w, ref.h, cols, rows, m.aspect())
 		if c == ref.cols && r == ref.rows {
 			continue
 		}
@@ -260,6 +260,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
 		m.listH = max(3, m.height-headerH-footerH)
+		m.cellAspect = termCellAspect() // a resize is also when the font may have changed
 		m.ensureVisible()
 		// widening past the art threshold must load the now-visible cover;
 		// covers already in the terminal are re-placed to the box's new size
@@ -427,7 +428,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		ref := m.covers[msg.icon]
 		ref.w, ref.h = msg.c.w, msg.c.h
 		cols, rows := m.artBox()
-		ref.cols, ref.rows = fitCover(ref.w, ref.h, cols, rows)
+		ref.cols, ref.rows = fitCover(ref.w, ref.h, cols, rows, m.aspect())
 		m.covers[msg.icon] = ref
 		shown := coverShownMsg{msg.icon}
 		return m, tea.Sequence(tea.Raw(transmitEscapes(ref.id, msg.c.png, ref.cols, ref.rows)), func() tea.Msg { return shown })

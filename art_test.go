@@ -107,16 +107,29 @@ func TestFitCoverKeepsTheAspect(t *testing.T) {
 	}{
 		{320, 176, 24, 7},  // landscape ICON0: width-bound
 		{260, 300, 17, 10}, // portrait multiMAN cover: height-bound
-		{100, 100, 10 * cellAspect, 10},
+		{100, 100, 20, 10},
 		{0, 0, 24, 10}, // unknown: the whole box
 	} {
-		cols, rows := fitCover(c.w, c.h, 24, 10)
+		cols, rows := fitCover(c.w, c.h, 24, 10, 2)
 		if cols != c.cols || rows != c.rows {
 			t.Errorf("fitCover(%d×%d) = %d×%d cells, want %d×%d", c.w, c.h, cols, rows, c.cols, c.rows)
 		}
 		if cols > 24 || rows > 10 || cols < 1 || rows < 1 {
 			t.Errorf("fitCover(%d×%d) = %d×%d, outside the box", c.w, c.h, cols, rows)
 		}
+	}
+}
+
+// The placement is shaped at the terminal's real cell aspect: Ghostty's
+// cells are nearer 1:2.4 than 1:2, and a rectangle cut for 1:2 leaves a
+// letterboxed strip inside the placement that nothing can center.
+func TestFitCoverUsesTheCellAspect(t *testing.T) {
+	// a 24-wide portrait needs 14 rows of 1:2 cells but only 12 of 1:2.4
+	if _, rows := fitCover(260, 300, 24, 20, 2); rows != 14 {
+		t.Errorf("1:2 cells: %d rows, want 14", rows)
+	}
+	if _, rows := fitCover(260, 300, 24, 20, 2.4); rows != 12 {
+		t.Errorf("1:2.4 cells: %d rows, want 12", rows)
 	}
 }
 
@@ -128,24 +141,29 @@ func TestArtBoxScalesWithTheTerminal(t *testing.T) {
 		width, listH int
 		cols, rows   int
 	}{
-		{84, 20, artMinCols, 12},          // the art threshold: narrowest box, rows from the height
-		{120, 23, artMinCols, 15},         // capped by the portrait ratio (24 cols → 15 rows)
-		{200, 30, 33, 20},                 // wide and tall: 33 cols, 22 rows on offer, capped at 20
+		{84, 20, artMinCols, 13},          // the art threshold: narrowest box, rows from the height
+		{120, 23, 28, 16},                 // 30 cols on offer, 16 rows, width given back to 28
+		{125, 25, 31, 18},                 // a 125×32 Ghostty window
+		{200, 30, 40, 23},                 // wide and tall: 50 → 48 cols, 23 rows, width back to 40
 		{300, 12, artMinCols, artMinRows}, // very wide but short: rows floored, and the width given back
-		{300, 40, artMaxCols, 24},         // the ceiling: 40 cols, 24 rows
+		{300, 60, artMaxCols, 28},         // the ceiling: 48 cols, capped at the portrait's 28 rows
 	} {
-		cols, rows := artBox(c.width, c.listH)
+		cols, rows := artBox(c.width, c.listH, 2)
 		if cols != c.cols || rows != c.rows {
 			t.Errorf("artBox(%d, %d) = %d×%d, want %d×%d", c.width, c.listH, cols, rows, c.cols, c.rows)
 		}
 		if cols > len(diacritics) || rows > len(diacritics) {
 			t.Errorf("artBox(%d, %d) = %d×%d exceeds the %d-entry diacritics table", c.width, c.listH, cols, rows, len(diacritics))
 		}
-		// when the box is as tall as the portrait ratio allows, a portrait
-		// cover fills its width — the rows aren't being handed out for nothing
-		if pc, _ := fitCover(260, 300, cols, rows); rows == (cols*3+4)/5 && pc != cols {
-			t.Errorf("artBox(%d, %d) = %d×%d: a portrait cover only reaches %d cols", c.width, c.listH, cols, rows, pc)
+		// a portrait cover fills the box's width or its height — the rows
+		// and columns aren't being handed out for nothing
+		if pc, pr := fitCover(260, 300, cols, rows, 2); pc != cols && pr != rows {
+			t.Errorf("artBox(%d, %d) = %d×%d: a portrait cover only reaches %d×%d", c.width, c.listH, cols, rows, pc, pr)
 		}
+	}
+	// a taller cell aspect means fewer rows for the same width
+	if _, rows := artBox(125, 40, 2.4); rows >= 18 {
+		t.Errorf("1:2.4 cells: box has %d rows, want fewer than at 1:2", rows)
 	}
 }
 

@@ -109,6 +109,11 @@ type model struct {
 
 	width, height int
 	listH         int
+	// cellAspect is the terminal's cell height over its width, measured at
+	// each resize (defaultCellAspect when it won't say). Cover placements are
+	// shaped with it, so a portrait cover comes out portrait on a terminal
+	// whose cells aren't the 1:2 the default assumes.
+	cellAspect float64
 
 	st         Status
 	online     bool
@@ -216,7 +221,14 @@ func (m *model) clearFlashLater() tea.Cmd {
 func (m *model) artShown() bool { return m.artOn && m.width >= 84 }
 
 // artBox is the cover box at the current terminal size.
-func (m *model) artBox() (cols, rows int) { return artBox(m.width, m.listH) }
+func (m *model) artBox() (cols, rows int) { return artBox(m.width, m.listH, m.aspect()) }
+
+func (m *model) aspect() float64 {
+	if m.cellAspect > 0 {
+		return m.cellAspect
+	}
+	return defaultCellAspect
+}
 
 func (m *model) listWidth() int {
 	w := m.width

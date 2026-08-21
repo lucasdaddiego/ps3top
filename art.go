@@ -14,6 +14,7 @@ package main
 import (
 	"encoding/base64"
 	"fmt"
+	"math"
 	"os"
 	"strings"
 )
@@ -26,40 +27,54 @@ import (
 // portrait cover at that width would already be filling it.
 const (
 	artMinCols  = 24
-	artMaxCols  = 40
+	artMaxCols  = 48 // the diacritics table is the ceiling
 	artMinRows  = 7
-	artTextRows = 6 // under the box: title (two lines), meta, play total, last played, mounted
+	artTextRows = 5 // under the box: title (up to two lines), meta, play total, last played
 	placeholder = '\U0010EEEE'
 )
 
-// artBox is the cover box for a terminal of this width and list height.
-func artBox(width, listH int) (cols, rows int) {
-	cols = clamp(width/6, artMinCols, artMaxCols)
-	// 3/5 is a 260×300 portrait's height in rows per column of width, at the
-	// cell aspect below — taller than that and no cover could use the rows
-	// and a short window gives the width back, since a box wider than its
-	// rows can fill only costs the list columns
-	rows = clamp(listH-2-artTextRows, artMinRows, (cols*3+4)/5)
-	cols = clamp(rows*5/3, artMinCols, cols)
+// Portrait cover proportions, for sizing the box: multiMAN's are 260×300.
+const portraitW, portraitH = 260, 300
+
+// artBox is the cover box for a terminal of this width and list height, at a
+// given cell aspect.
+func artBox(width, listH int, aspect float64) (cols, rows int) {
+	cols = clamp(width/4, artMinCols, artMaxCols)
+	// taller than a portrait cover at this width and no cover could use the
+	// rows; and a short window gives the width back, since a box wider than
+	// its rows can fill only costs the list columns
+	rows = clamp(listH-2-artTextRows, artMinRows, rowsFor(cols, portraitW, portraitH, aspect))
+	cols = clamp(colsFor(rows, portraitW, portraitH, aspect), artMinCols, cols)
 	return cols, rows
 }
 
-// cellAspect is a terminal cell's height in units of its width. Most
-// monospace faces sit near 1:2; close enough that a cover shaped by it reads
-// as the cover, not a squashed one.
-const cellAspect = 2
+// defaultCellAspect is a terminal cell's height in units of its width when
+// the terminal won't say: most monospace faces sit near 1:2.
+const defaultCellAspect = 2.0
+
+// colsFor is how many columns an image of w×h pixels spans at rows tall;
+// rowsFor the converse. Both round, both floor at one cell.
+func colsFor(rows, w, h int, aspect float64) int {
+	return max(1, int(math.Round(float64(rows)*aspect*float64(w)/float64(h))))
+}
+
+func rowsFor(cols, w, h int, aspect float64) int {
+	return max(1, int(math.Round(float64(cols)*float64(h)/(float64(w)*aspect))))
+}
 
 // fitCover sizes an image's placement to fit inside a cols×rows box at its
-// own aspect ratio. Kitty scales the image to exactly the cells it's given,
-// so the only way to keep a portrait cover portrait is to hand it a portrait
-// rectangle.
-func fitCover(w, h, cols, rows int) (int, int) {
+// own aspect ratio. Kitty scales the image to fit the cells it's given —
+// letterboxing inside them if the rectangle is the wrong shape — so the
+// placement has to be the image's shape at the terminal's real cell aspect,
+// or the blank strip ends up inside the placement where nothing can center
+// it.
+func fitCover(w, h, cols, rows int, aspect float64) (int, int) {
 	if w <= 0 || h <= 0 {
 		return cols, rows
 	}
 	// as wide as the box allows at full height, then shrink to the box width
-	c := min(cols, max(1, (rows*cellAspect*w+h/2)/h))
-	r := min(rows, max(1, (c*h+w*cellAspect/2)/(w*cellAspect)))
+	c := min(cols, colsFor(rows, w, h, aspect))
+	r := min(rows, rowsFor(c, w, h, aspect))
 	return c, r
 }
 

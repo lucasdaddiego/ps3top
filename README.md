@@ -320,9 +320,14 @@ skips the confirm.
   than guessed at. Each cover is placed
   at its own aspect inside the art box rather than stretched to it, since
   kitty scales an image to exactly the cells it's given — a portrait cover
-  stays portrait. The box is sized from the terminal (24–40 columns, as many
-  rows as the panel's text leaves), and a resize re-places the covers the
-  terminal already holds without touching the console. A cached cover shows at once; an uncached
+  stays portrait. The box is sized from the terminal (a quarter of the width,
+  24–48 columns, as many rows as the panel's text leaves) and the placement
+  is shaped at the terminal's *measured* cell aspect (`TIOCGWINSZ` pixel
+  fields; kitty and Ghostty fill them in, 1:2 assumed otherwise) — the
+  terminal letterboxes inside a placement of the wrong shape, and that strip
+  can't be centered from outside. A resize re-places the covers the terminal
+  already holds without touching the console. The panel is centered in the
+  list's height. A cached cover shows at once; an uncached
   one is requested only after the cursor has rested on its row for 150ms, and
   never more than one at a time — holding `j` through a fresh library used to
   open one connection per row it passed, at a server with ~4 slots. A cover
