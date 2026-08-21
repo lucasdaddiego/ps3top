@@ -73,6 +73,7 @@ type (
 // terminal doesn't hold yet render as nothing.
 type coverRef struct {
 	id         int
+	w, h       int // pixel size, so the placement can be reshaped on resize
 	cols, rows int
 	shown      bool
 }
@@ -214,10 +215,14 @@ func (m *model) clearFlashLater() tea.Cmd {
 
 func (m *model) artShown() bool { return m.artOn && m.width >= 84 }
 
+// artBox is the cover box at the current terminal size.
+func (m *model) artBox() (cols, rows int) { return artBox(m.width, m.listH) }
+
 func (m *model) listWidth() int {
 	w := m.width
 	if m.artShown() {
-		w -= artCols + 2 + 2 // cover border + gap
+		cols, _ := m.artBox()
+		w -= cols + 2 + 2 // cover border + gap
 	}
 	return max(20, w)
 }

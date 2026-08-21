@@ -11,6 +11,7 @@ import (
 	"image/png"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -23,7 +24,7 @@ func coverKey(iconPath string) string {
 }
 
 // coverMaxPx bounds what we'll hand the terminal to decode. webMAN covers are
-// 320×176 ICON0s or 260×300 cover-pack JPEGs; anything near this is not one.
+// 320×176 ICON0s or 260×300 multiMAN JPEGs; anything near this is not one.
 const coverMaxPx = 4096
 
 // cover is an image ready for the terminal: PNG bytes (the one format the
@@ -33,9 +34,11 @@ type cover struct {
 	w, h int
 }
 
-// decodeCover accepts the two things webMAN serves as a game icon — the
-// ICON0 PNG from the ISO, or a JPEG from a cover pack — and returns a PNG
-// either way, since that's what goes down the wire to the terminal. Anything
+// decodeCover accepts the two things webMAN serves as a game icon, which is
+// the covers source on /setup.ps3: ICON0.PNG is the ISO's own 320×176 icon,
+// MM COVERS is multiMAN's folder of 260×300 JPEGs (/dev_hdd0/game/BLES80608/
+// USRDIR/covers/<ID>.JPG, with whatever cover pack was dropped in there). It
+// returns a PNG either way, since that's what goes down the wire. Anything
 // else is refused: webMAN answers 200 for pages that aren't covers at all
 // (an error page, a redirect body), and without this those were written to
 // the cache and re-fed to the terminal's decoder on every selection, forever.
@@ -74,7 +77,15 @@ func coverCached(cacheDir, iconPath string) bool {
 
 // loadCover returns the cover for a webMAN icon path, hitting the PS3 only
 // on cache miss. The cache always holds the PNG, so a JPEG is converted once.
+//
+// Only console paths are fetched. The ONLINE COVERS source on /setup.ps3 has
+// webMAN pull covers from the web itself, and what it then writes into the
+// icon field hasn't been captured — if it's a URL, gluing it onto the
+// console's address would request nonsense, so it's refused outright.
 func loadCover(cli *Client, cacheDir, iconPath string) (cover, error) {
+	if !strings.HasPrefix(iconPath, "/") {
+		return cover{}, fmt.Errorf("cover %q: not a console path", iconPath)
+	}
 	cache := filepath.Join(cacheDir, coverKey(iconPath))
 	if b, err := os.ReadFile(cache); err == nil && len(b) > 0 {
 		if c, err := decodeCover(b); err == nil {

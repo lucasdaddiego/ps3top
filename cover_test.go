@@ -200,3 +200,16 @@ func TestDecodeCoverBounds(t *testing.T) {
 		t.Error("a 100000px-wide cover was accepted")
 	}
 }
+
+// The ONLINE COVERS source may hand webMAN a URL for the icon; that's not a
+// path on the console, and prefixing the console's address to it would make
+// a request for nothing. Refused before any request goes out.
+func TestNonConsoleIconPathIsRefused(t *testing.T) {
+	cli, hits := coverServer(t, tinyPNG(t))
+	if _, err := loadCover(cli, t.TempDir(), "http://example.com/cover.jpg"); err == nil {
+		t.Error("a URL icon was fetched from the console")
+	}
+	if *hits != 0 {
+		t.Errorf("a URL icon still cost %d request(s)", *hits)
+	}
+}

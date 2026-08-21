@@ -189,6 +189,31 @@ func (m *model) startCover(icon string) tea.Cmd {
 	}
 }
 
+// replaceCovers re-shapes every transmitted cover's placement to the current
+// box — a resize changes the box, and a placement is fixed at the size it
+// was bound with. The pixels stay in the terminal; this is one escape per
+// cover and no request to the console.
+func (m *model) replaceCovers() tea.Cmd {
+	cols, rows := m.artBox()
+	var sb strings.Builder
+	for icon, ref := range m.covers {
+		if !ref.shown {
+			continue
+		}
+		c, r := fitCover(ref.w, ref.h, cols, rows)
+		if c == ref.cols && r == ref.rows {
+			continue
+		}
+		ref.cols, ref.rows = c, r
+		m.covers[icon] = ref
+		sb.WriteString(placementEscape(ref.id, c, r))
+	}
+	if sb.Len() == 0 {
+		return nil
+	}
+	return tea.Raw(sb.String())
+}
+
 // anyShown reports whether the terminal holds any cover — what decides if
 // quitting owes it a delete-all.
 func (m *model) anyShown() bool {
@@ -236,8 +261,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.listH = max(3, m.height-headerH-footerH)
 		m.ensureVisible()
-		// widening past the art threshold must load the now-visible cover
-		return m, m.ensureCover()
+		// widening past the art threshold must load the now-visible cover;
+		// covers already in the terminal are re-placed to the box's new size
+		return m, tea.Batch(m.replaceCovers(), m.ensureCover())
 
 	case tickMsg:
 		next := m.interval
@@ -399,7 +425,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// same cover can't be started twice, and the placeholder cells only
 		// appear in a frame once the bytes are ahead of it in the output
 		ref := m.covers[msg.icon]
-		ref.cols, ref.rows = fitCover(msg.c.w, msg.c.h)
+		ref.w, ref.h = msg.c.w, msg.c.h
+		cols, rows := m.artBox()
+		ref.cols, ref.rows = fitCover(ref.w, ref.h, cols, rows)
 		m.covers[msg.icon] = ref
 		shown := coverShownMsg{msg.icon}
 		return m, tea.Sequence(tea.Raw(transmitEscapes(ref.id, msg.c.png, ref.cols, ref.rows)), func() tea.Msg { return shown })

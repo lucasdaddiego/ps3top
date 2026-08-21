@@ -455,13 +455,13 @@ var (
 	reVer   = regexp.MustCompile(`^v(\d+\.[\d.]+)$`)
 )
 
-// splitInfo takes the info field apart. webMAN has rendered it two ways: the
-// bare source folder ("hdd0/PS3ISO", with the title ID tacked onto the title
-// as "[BLES00455]"), and — on current builds — "hdd0/PS3ISO | BLES00455 |
-// v01.90", the ID and installed version moved out of the title. The first
-// segment is the category either way; any segment that looks like a title ID
-// or a version is taken for what it is, and the rest is ignored rather than
-// guessed at.
+// splitInfo takes the info field apart. Its shape follows the "Add game-ID
+// to game-title" box on /setup.ps3: ticked, the field is the bare source
+// folder ("hdd0/PS3ISO") and the ID rides on the title as "[BLES00455]";
+// unticked, the field carries it — "hdd0/PS3ISO | BLES00455 | v01.90", the
+// installed version included. The first segment is the category either way;
+// any segment that looks like a title ID or a version is taken for what it
+// is, and the rest is ignored rather than guessed at.
 func splitInfo(info string) (category, id, ver string) {
 	parts := strings.Split(info, "|")
 	category = strings.TrimSpace(parts[0])
@@ -496,8 +496,9 @@ func parseGames(xml string) []Game {
 				g.Category, g.ID, g.Ver = splitInfo(sanitize(f[2]))
 			}
 		}
-		// older builds carry the ID as a title suffix instead; strip it from
-		// the display name either way, and let it supply the ID if info didn't
+		// with the setup box ticked the ID is a title suffix instead; strip it
+		// from the display name either way, and let it supply the ID if info
+		// didn't
 		if m := reTitID.FindStringSubmatch(g.Title); m != nil {
 			if g.ID == "" {
 				g.ID = m[1]

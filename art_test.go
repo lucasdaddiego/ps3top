@@ -96,40 +96,69 @@ func TestTransmitEscapes(t *testing.T) {
 }
 
 // A placement is shaped to the cover, not to the box: a 320×176 ICON0 takes
-// the box's full width and a portion of its height, a 260×300 cover-pack JPEG
-// takes the full height and a portion of its width. Kitty scales an image to
-// exactly the cells it's given, so this is the only thing keeping a portrait
-// cover portrait.
+// the box's full width and a portion of its height, a 260×300 multiMAN JPEG
+// the full height and a portion of its width — in a 24×10 box. Kitty scales
+// an image to exactly the cells it's given, so this is the only thing
+// keeping a portrait cover portrait.
 func TestFitCoverKeepsTheAspect(t *testing.T) {
 	for _, c := range []struct {
 		w, h       int
 		cols, rows int
 	}{
-		{320, 176, artCols, 7},  // landscape ICON0: width-bound
-		{260, 300, 17, artRows}, // portrait cover pack: height-bound
-		{100, 100, artRows * cellAspect, artRows},
-		{0, 0, artCols, artRows}, // unknown: the whole box
+		{320, 176, 24, 7},  // landscape ICON0: width-bound
+		{260, 300, 17, 10}, // portrait multiMAN cover: height-bound
+		{100, 100, 10 * cellAspect, 10},
+		{0, 0, 24, 10}, // unknown: the whole box
 	} {
-		cols, rows := fitCover(c.w, c.h)
+		cols, rows := fitCover(c.w, c.h, 24, 10)
 		if cols != c.cols || rows != c.rows {
 			t.Errorf("fitCover(%d×%d) = %d×%d cells, want %d×%d", c.w, c.h, cols, rows, c.cols, c.rows)
 		}
-		if cols > artCols || rows > artRows || cols < 1 || rows < 1 {
+		if cols > 24 || rows > 10 || cols < 1 || rows < 1 {
 			t.Errorf("fitCover(%d×%d) = %d×%d, outside the box", c.w, c.h, cols, rows)
 		}
 	}
 }
 
+// The box grows with the terminal: wider windows get a wider cover, and the
+// box takes the rows the panel's text leaves — but never more than a portrait
+// cover at that width can fill, and never past the diacritics table.
+func TestArtBoxScalesWithTheTerminal(t *testing.T) {
+	for _, c := range []struct {
+		width, listH int
+		cols, rows   int
+	}{
+		{84, 20, artMinCols, 12},          // the art threshold: narrowest box, rows from the height
+		{120, 23, artMinCols, 15},         // capped by the portrait ratio (24 cols → 15 rows)
+		{200, 30, 33, 20},                 // wide and tall: 33 cols, 22 rows on offer, capped at 20
+		{300, 12, artMinCols, artMinRows}, // very wide but short: rows floored, and the width given back
+		{300, 40, artMaxCols, 24},         // the ceiling: 40 cols, 24 rows
+	} {
+		cols, rows := artBox(c.width, c.listH)
+		if cols != c.cols || rows != c.rows {
+			t.Errorf("artBox(%d, %d) = %d×%d, want %d×%d", c.width, c.listH, cols, rows, c.cols, c.rows)
+		}
+		if cols > len(diacritics) || rows > len(diacritics) {
+			t.Errorf("artBox(%d, %d) = %d×%d exceeds the %d-entry diacritics table", c.width, c.listH, cols, rows, len(diacritics))
+		}
+		// when the box is as tall as the portrait ratio allows, a portrait
+		// cover fills its width — the rows aren't being handed out for nothing
+		if pc, _ := fitCover(260, 300, cols, rows); rows == (cols*3+4)/5 && pc != cols {
+			t.Errorf("artBox(%d, %d) = %d×%d: a portrait cover only reaches %d cols", c.width, c.listH, cols, rows, pc)
+		}
+	}
+}
+
 func TestPlacementRow(t *testing.T) {
-	row := placementRow(42, 0, artCols)
+	row := placementRow(42, 0, artMinCols)
 	if !strings.HasPrefix(row, "\x1b[38;5;42m") {
 		t.Errorf("image id isn't carried in the foreground colour: %q", row)
 	}
 	if !strings.HasSuffix(row, "\x1b[39m") {
 		t.Errorf("colour not reset: %q", row)
 	}
-	if n := strings.Count(row, string(placeholder)); n != artCols {
-		t.Errorf("%d placeholder cells, want %d", n, artCols)
+	if n := strings.Count(row, string(placeholder)); n != artMinCols {
+		t.Errorf("%d placeholder cells, want %d", n, artMinCols)
 	}
 	// the row diacritic identifies which row of the image this is
 	if !strings.ContainsRune(row, diacritics[3]) {
@@ -205,7 +234,7 @@ func (m placeholderModel) View() tea.View {
 func TestRendererPassesPlaceholderCellsThrough(t *testing.T) {
 	const id = 7
 	var out strings.Builder
-	p := tea.NewProgram(placeholderModel{placementRow(id, 3, artCols)},
+	p := tea.NewProgram(placeholderModel{placementRow(id, 3, artMinCols)},
 		tea.WithInput(nil),
 		tea.WithOutput(&out),
 		tea.WithoutSignals(),
@@ -222,8 +251,8 @@ func TestRendererPassesPlaceholderCellsThrough(t *testing.T) {
 	if !strings.Contains(got, cell) {
 		t.Fatalf("first placeholder cell (U+10EEEE + row/col diacritics) not in the output:\n%q", got)
 	}
-	if n := strings.Count(got, string(placeholder)); n != artCols {
-		t.Errorf("%d placeholder cells reached the terminal, want %d", n, artCols)
+	if n := strings.Count(got, string(placeholder)); n != artMinCols {
+		t.Errorf("%d placeholder cells reached the terminal, want %d", n, artMinCols)
 	}
 	// the image id rides in the foreground colour of those cells
 	if !strings.Contains(got, "38;5;7m") && !strings.Contains(got, ";38;5;7m") {

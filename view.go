@@ -501,6 +501,7 @@ func (m *model) artPanel() string {
 		return ""
 	}
 
+	artCols, artRows := m.artBox()
 	var cover string
 	if ref := m.covers[g.IconPath]; ref.shown {
 		// the placement sits centered in the box at the image's own aspect;
@@ -515,7 +516,7 @@ func (m *model) artPanel() string {
 			rows = append(rows, blank)
 		}
 		for r := range ref.rows {
-			rows = append(rows, strings.Repeat(" ", left)+placementRow(ref.id, r, ref.cols)+strings.Repeat(" ", artCols-left-ref.cols))
+			rows = append(rows, strings.Repeat(" ", left)+placementRow(ref.id, r, ref.cols)+strings.Repeat(" ", max(0, artCols-left-ref.cols)))
 		}
 		for len(rows) < artRows {
 			rows = append(rows, blank)

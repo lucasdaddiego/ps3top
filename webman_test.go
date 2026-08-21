@@ -811,12 +811,13 @@ func TestLessTitles(t *testing.T) {
 	}
 }
 
-// Current webMAN builds moved the title ID out of the title and into info —
-// "hdd0/PS3ISO | BLES00455 | v01.90" — and point icons at a cover pack's
-// JPEGs (with a doubled slash in the path). Captured 2026-08-21; before this
-// every game parsed with an empty ID, so rows lost their ID column and play
-// history keyed by ID stopped matching its game. The older shape, with the
-// ID as a "[BLES00455]" title suffix, still has to parse too.
+// With "Add game-ID to game-title" unticked on /setup.ps3 the title ID moves
+// into info — "hdd0/PS3ISO | BLES00455 | v01.90" — and with MM COVERS as the
+// covers source the icons are multiMAN's JPEGs (with a doubled slash in the
+// path). Captured 2026-08-21; before this every game parsed with an empty
+// ID, so rows lost their ID column and play history keyed by ID stopped
+// matching its game. The ticked shape, ID as a "[BLES00455]" title suffix,
+// still has to parse too.
 func TestParseGamesReadsIDsFromInfo(t *testing.T) {
 	b, err := os.ReadFile("testdata/mygames_info_ids.xml")
 	if err != nil {

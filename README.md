@@ -303,20 +303,26 @@ skips the confirm.
   handed to the terminal's image decoder.
 - Game list from the **static** `mygames.xml` (`/dev_hdd0/xmlhost/game_plugin/`),
   fetched at startup and on `r`. It's XMB pseudo-XML (`<>value</>`), hence the
-  regex parser. webMAN has written it two ways: the title ID as a `[BLES00455]`
-  suffix on the title, or — on current builds — in the `info` field as
-  `hdd0/PS3ISO | BLES00455 | v01.90`, version included; both parse, and the
-  version shows in the art panel. `g` first asks webMAN to rebuild it
+  regex parser. Its shape follows the **Add game-ID to game-title** box on
+  `/setup.ps3`: ticked, the title ID is a `[BLES00455]` suffix on the title;
+  unticked, it's in the `info` field as `hdd0/PS3ISO | BLES00455 | v01.90`,
+  version included. Both parse, and the version shows in the art panel. `g` first asks webMAN to rebuild it
   (`/refresh.ps3?xmb`, 30s timeout — a rescan walks every ISO directory) and
   reloads 1.5s after the reply, in case the XML is still being written when
   webMAN answers.
-- Covers — the ISO's own ICON0 PNG (320×176, `/dev_hdd0/tmp/wmtmp/`) or, with
-  a cover pack installed, a 260×300 JPEG from it — fetched once per game and
+- Covers follow the covers source on `/setup.ps3`: **ICON0.PNG** is the ISO's
+  own 320×176 icon (`/dev_hdd0/tmp/wmtmp/`), **MM COVERS** is multiMAN's
+  folder of 260×300 JPEGs (`/dev_hdd0/game/BLES80608/USRDIR/covers/`, filled
+  by whatever cover pack you installed). Either is fetched once per game and
   cached as PNG in `~/Library/Caches/ps3top/covers/` (the kitty transmission
-  only carries PNG, so a JPEG is converted on the way in). Each cover is placed
-  at its own aspect inside the 24×10 art box rather than stretched to it,
-  since kitty scales an image to exactly the cells it's given — a portrait
-  cover stays portrait. A cached cover shows at once; an uncached
+  only carries PNG, so a JPEG is converted on the way in). **ONLINE COVERS**
+  hasn't been captured; an icon that isn't a console path is refused rather
+  than guessed at. Each cover is placed
+  at its own aspect inside the art box rather than stretched to it, since
+  kitty scales an image to exactly the cells it's given — a portrait cover
+  stays portrait. The box is sized from the terminal (24–40 columns, as many
+  rows as the panel's text leaves), and a resize re-places the covers the
+  terminal already holds without touching the console. A cached cover shows at once; an uncached
   one is requested only after the cursor has rested on its row for 150ms, and
   never more than one at a time — holding `j` through a fresh library used to
   open one connection per row it passed, at a server with ~4 slots. A cover
@@ -389,8 +395,8 @@ frames.
 ## Tests
 
 `go test` runs the parsers against the fixtures in `testdata/` (in-game
-`cpursx.ps3`, `mygames.xml`, and `mygames_info_ids.xml` for the current
-info-carried-ID / cover-pack shape). The fixtures are **synthetic**: byte-faithful to
+`cpursx.ps3`, `mygames.xml` with the game-ID-in-title setting on, and
+`mygames_info_ids.xml` with it off plus MM COVERS). The fixtures are **synthetic**: byte-faithful to
 real webMAN (sMAN skin) output in structure, but every game title, title ID,
 and counter is invented (`MOCK…`/`DEMO…` IDs), chosen to exercise the sort
 rules — word-before-number, roman numerals, `V2`-style numbers, embedded
