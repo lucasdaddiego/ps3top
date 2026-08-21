@@ -75,6 +75,7 @@ func (s Status) missing() int {
 type Game struct {
 	Title    string // "Sample Game™ 2"
 	ID       string // "MOCK30982"
+	Ver      string // "01.15" — the installed version, when webMAN lists it
 	Path     string // "/dev_hdd0/PS3ISO/SampleGame2.iso"
 	MountURL string // "/mount_ps3/dev_hdd0/PS3ISO/SampleGame2.iso"
 	IconPath string // "/dev_hdd0/tmp/wmtmp/SampleGame2.PNG"
@@ -450,7 +451,31 @@ var (
 	reEntry = regexp.MustCompile(`(?s)<T key="\d+" include="inc">(.*?)</T>`)
 	reField = regexp.MustCompile(`<P key="(icon|title|module_action|info)"><>([^<]*)</>`)
 	reTitID = regexp.MustCompile(`\s*\[([A-Z0-9]{9})\]\s*$`)
+	reID    = regexp.MustCompile(`^[A-Z0-9]{9}$`)
+	reVer   = regexp.MustCompile(`^v(\d+\.[\d.]+)$`)
 )
+
+// splitInfo takes the info field apart. webMAN has rendered it two ways: the
+// bare source folder ("hdd0/PS3ISO", with the title ID tacked onto the title
+// as "[BLES00455]"), and — on current builds — "hdd0/PS3ISO | BLES00455 |
+// v01.90", the ID and installed version moved out of the title. The first
+// segment is the category either way; any segment that looks like a title ID
+// or a version is taken for what it is, and the rest is ignored rather than
+// guessed at.
+func splitInfo(info string) (category, id, ver string) {
+	parts := strings.Split(info, "|")
+	category = strings.TrimSpace(parts[0])
+	for _, p := range parts[1:] {
+		p = strings.TrimSpace(p)
+		switch {
+		case id == "" && reID.MatchString(p):
+			id = p
+		case ver == "" && reVer.MatchString(p):
+			ver = reVer.FindStringSubmatch(p)[1]
+		}
+	}
+	return category, id, ver
+}
 
 func parseGames(xml string) []Game {
 	var games []Game
@@ -468,11 +493,15 @@ func parseGames(xml string) []Game {
 			case "module_action":
 				g.MountURL = sanitize(f[2])
 			case "info":
-				g.Category = sanitize(f[2])
+				g.Category, g.ID, g.Ver = splitInfo(sanitize(f[2]))
 			}
 		}
+		// older builds carry the ID as a title suffix instead; strip it from
+		// the display name either way, and let it supply the ID if info didn't
 		if m := reTitID.FindStringSubmatch(g.Title); m != nil {
-			g.ID = m[1]
+			if g.ID == "" {
+				g.ID = m[1]
+			}
 			g.Title = strings.TrimSpace(reTitID.ReplaceAllString(g.Title, ""))
 		}
 		g.Path = strings.TrimPrefix(g.MountURL, "/mount_ps3")

@@ -810,3 +810,65 @@ func TestLessTitles(t *testing.T) {
 		}
 	}
 }
+
+// Current webMAN builds moved the title ID out of the title and into info —
+// "hdd0/PS3ISO | BLES00455 | v01.90" — and point icons at a cover pack's
+// JPEGs (with a doubled slash in the path). Captured 2026-08-21; before this
+// every game parsed with an empty ID, so rows lost their ID column and play
+// history keyed by ID stopped matching its game. The older shape, with the
+// ID as a "[BLES00455]" title suffix, still has to parse too.
+func TestParseGamesReadsIDsFromInfo(t *testing.T) {
+	b, err := os.ReadFile("testdata/mygames_info_ids.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	games := parseGames(string(b))
+	if len(games) != 4 {
+		t.Fatalf("len(games) = %d, want 4", len(games))
+	}
+	byID := map[string]Game{}
+	for _, g := range games {
+		byID[g.ID] = g
+	}
+	got, ok := byID["MOCK30982"]
+	if !ok {
+		t.Fatalf("ID not read from info: %+v", games)
+	}
+	if got.Title != "Sample Game™ 2" || got.Ver != "01.15" || got.Category != "hdd0/PS3ISO" {
+		t.Errorf("entry = %+v, want title/ver/category split out of info", got)
+	}
+	if got.IconPath != "/dev_hdd0//game/MOCK80608/USRDIR/covers/MOCK30982.JPG" {
+		t.Errorf("icon path altered: %q", got.IconPath)
+	}
+	if g := byID["MOCK98137"]; g.Ver != "" {
+		t.Errorf("an entry without a version got one: %+v", g)
+	}
+	// PSX entries carry an ID in this shape, and it wins over the title key
+	if g := byID["DEMO00474"]; g.Console() != "PSX" || statKey(g.ID, g.Title) != "DEMO00474" {
+		t.Errorf("PSX entry: %+v", g)
+	}
+	// the legacy suffix still supplies the ID when info doesn't
+	if g := byID["MOCK00001"]; g.Title != "Legacy Title" {
+		t.Errorf("legacy suffix entry: %+v", g)
+	}
+	for _, g := range games {
+		if g.Console() == "" || g.Console() == "PSP" {
+			t.Errorf("console misread from %q: %+v", g.Category, g)
+		}
+	}
+}
+
+func TestSplitInfo(t *testing.T) {
+	for _, c := range []struct{ in, cat, id, ver string }{
+		{"hdd0/PS3ISO", "hdd0/PS3ISO", "", ""},
+		{"hdd0/PS3ISO | BLES00455", "hdd0/PS3ISO", "BLES00455", ""},
+		{"hdd0/PS3ISO | BLES00455 | v01.90", "hdd0/PS3ISO", "BLES00455", "01.90"},
+		{"hdd0/PSXISO | SLES00474", "hdd0/PSXISO", "SLES00474", ""},
+		{"hdd0/PS3ISO | not-an-id | v2", "hdd0/PS3ISO", "", ""}, // neither shape: left empty, not guessed
+	} {
+		cat, id, ver := splitInfo(c.in)
+		if cat != c.cat || id != c.id || ver != c.ver {
+			t.Errorf("splitInfo(%q) = %q/%q/%q, want %q/%q/%q", c.in, cat, id, ver, c.cat, c.id, c.ver)
+		}
+	}
+}

@@ -18,11 +18,34 @@ import (
 	"strings"
 )
 
+// The art box. Covers come in two shapes — 320×176 ICON0s and 260×300
+// cover-pack JPEGs — so the box is tall enough for a portrait and wide enough
+// for a landscape, and each image is placed at its own aspect inside it
+// (fitCover) rather than stretched to the box.
 const (
 	artCols     = 24
-	artRows     = 7
+	artRows     = 10
 	placeholder = '\U0010EEEE'
 )
+
+// cellAspect is a terminal cell's height in units of its width. Most
+// monospace faces sit near 1:2; close enough that a cover shaped by it reads
+// as the cover, not a squashed one.
+const cellAspect = 2
+
+// fitCover sizes an image's placement to fit inside the art box at its own
+// aspect ratio. Kitty scales the image to exactly the cells it's given, so
+// the only way to keep a portrait cover portrait is to hand it a portrait
+// rectangle.
+func fitCover(w, h int) (cols, rows int) {
+	if w <= 0 || h <= 0 {
+		return artCols, artRows
+	}
+	// as wide as the box allows at full height, then shrink to the box width
+	cols = min(artCols, max(1, (artRows*cellAspect*w+h/2)/h))
+	rows = min(artRows, max(1, (cols*h+w*cellAspect/2)/(w*cellAspect)))
+	return cols, rows
+}
 
 // First rows/cols of kitty's rowcolumn-diacritics table — enough for a
 // artCols-wide placement.
@@ -44,8 +67,8 @@ func artSupported() bool {
 }
 
 // transmitEscapes encodes a PNG as an id-tagged kitty image plus a virtual
-// placement scaled to the art panel box.
-func transmitEscapes(id int, png []byte) string {
+// placement of cols×rows cells.
+func transmitEscapes(id int, png []byte, cols, rows int) string {
 	b64 := base64.StdEncoding.EncodeToString(png)
 	var sb strings.Builder
 	first := true
@@ -64,16 +87,16 @@ func transmitEscapes(id int, png []byte) string {
 		}
 		b64 = rest
 	}
-	fmt.Fprintf(&sb, "\x1b_Ga=p,i=%d,U=1,p=1,c=%d,r=%d,q=2\x1b\\", id, artCols, artRows)
+	fmt.Fprintf(&sb, "\x1b_Ga=p,i=%d,U=1,p=1,c=%d,r=%d,q=2\x1b\\", id, cols, rows)
 	return sb.String()
 }
 
-// placementRow renders one row of placeholder cells for image id (id must be
-// ≤255: it is carried in the 256-color foreground).
-func placementRow(id, row int) string {
+// placementRow renders one row of cols placeholder cells for image id (id
+// must be ≤255: it is carried in the 256-color foreground).
+func placementRow(id, row, cols int) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "\x1b[38;5;%dm", id)
-	for c := 0; c < artCols; c++ {
+	for c := 0; c < cols; c++ {
 		sb.WriteRune(placeholder)
 		sb.WriteRune(diacritics[row])
 		sb.WriteRune(diacritics[c])

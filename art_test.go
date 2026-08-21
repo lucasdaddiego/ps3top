@@ -71,7 +71,7 @@ func TestArtSupported(t *testing.T) {
 
 func TestTransmitEscapes(t *testing.T) {
 	// small image: one chunk, so m=0 on the first (and only) transmission
-	small := transmitEscapes(7, []byte("tiny"))
+	small := transmitEscapes(7, []byte("tiny"), 24, 7)
 	if !strings.Contains(small, "\x1b_Gf=100,t=d,i=7,q=2,m=0;") {
 		t.Errorf("single-chunk header wrong:\n%q", small)
 	}
@@ -80,7 +80,7 @@ func TestTransmitEscapes(t *testing.T) {
 	}
 
 	// >4096 base64 chars must split into continuation chunks, the last m=0
-	big := transmitEscapes(3, make([]byte, 8000))
+	big := transmitEscapes(3, make([]byte, 8000), 17, 10)
 	if n := strings.Count(big, "\x1b_G"); n < 3 {
 		t.Errorf("8000 bytes produced %d escapes, want a chunked transmission", n)
 	}
@@ -95,8 +95,33 @@ func TestTransmitEscapes(t *testing.T) {
 	}
 }
 
+// A placement is shaped to the cover, not to the box: a 320×176 ICON0 takes
+// the box's full width and a portion of its height, a 260×300 cover-pack JPEG
+// takes the full height and a portion of its width. Kitty scales an image to
+// exactly the cells it's given, so this is the only thing keeping a portrait
+// cover portrait.
+func TestFitCoverKeepsTheAspect(t *testing.T) {
+	for _, c := range []struct {
+		w, h       int
+		cols, rows int
+	}{
+		{320, 176, artCols, 7},  // landscape ICON0: width-bound
+		{260, 300, 17, artRows}, // portrait cover pack: height-bound
+		{100, 100, artRows * cellAspect, artRows},
+		{0, 0, artCols, artRows}, // unknown: the whole box
+	} {
+		cols, rows := fitCover(c.w, c.h)
+		if cols != c.cols || rows != c.rows {
+			t.Errorf("fitCover(%d×%d) = %d×%d cells, want %d×%d", c.w, c.h, cols, rows, c.cols, c.rows)
+		}
+		if cols > artCols || rows > artRows || cols < 1 || rows < 1 {
+			t.Errorf("fitCover(%d×%d) = %d×%d, outside the box", c.w, c.h, cols, rows)
+		}
+	}
+}
+
 func TestPlacementRow(t *testing.T) {
-	row := placementRow(42, 0)
+	row := placementRow(42, 0, artCols)
 	if !strings.HasPrefix(row, "\x1b[38;5;42m") {
 		t.Errorf("image id isn't carried in the foreground colour: %q", row)
 	}
@@ -180,7 +205,7 @@ func (m placeholderModel) View() tea.View {
 func TestRendererPassesPlaceholderCellsThrough(t *testing.T) {
 	const id = 7
 	var out strings.Builder
-	p := tea.NewProgram(placeholderModel{placementRow(id, 3)},
+	p := tea.NewProgram(placeholderModel{placementRow(id, 3, artCols)},
 		tea.WithInput(nil),
 		tea.WithOutput(&out),
 		tea.WithoutSignals(),

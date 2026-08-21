@@ -383,9 +383,10 @@ func TestCoverLifecycle(t *testing.T) {
 		t.Errorf("cover never transmitted to the terminal: %q", out)
 	}
 	m = exec(t, m, seq)
-	id := m.coverIDs[g.IconPath]
-	if !m.transmitted[id] {
-		t.Error("transmitted cover not recorded")
+	if ref := m.covers[g.IconPath]; !ref.shown || ref.id == 0 {
+		t.Errorf("transmitted cover not recorded: %+v", ref)
+	} else if ref.cols < 1 || ref.rows < 1 {
+		t.Errorf("placement unshaped: %+v", ref)
 	}
 	if m.coverBusy != "" {
 		t.Error("cover still marked busy after it arrived")
@@ -401,7 +402,7 @@ func TestCoverLifecycle(t *testing.T) {
 
 	// the fetch wrote the cache, so a fresh model finds it on disk and shows it
 	// without waiting: no tick, the load starts on the spot
-	m.coverIDs, m.transmitted = map[string]int{}, map[int]bool{}
+	m.covers = map[string]coverRef{}
 	if cmd := m.ensureCover(); cmd == nil || m.coverBusy != g.IconPath {
 		t.Error("a cached cover waited out the debounce")
 	} else {
@@ -414,7 +415,7 @@ func TestCoverLifecycle(t *testing.T) {
 	// or the entry just written would serve the request and succeed.
 	m.cli = NewClient("127.0.0.1:1")
 	m.cacheDir = t.TempDir()
-	m.coverIDs, m.transmitted = map[string]int{}, map[int]bool{}
+	m.covers = map[string]coverRef{}
 	m = exec(t, m, m.startCover(g.IconPath))
 	if m.coverBusy != "" {
 		t.Error("a failed cover stayed busy forever")
@@ -520,7 +521,7 @@ func TestCoverIDsExhaust(t *testing.T) {
 	if m.startCover(m.games[0].IconPath) == nil {
 		t.Fatal("id 255 should still be usable")
 	}
-	m.coverIDs, m.coverBusy = map[string]int{}, ""
+	m.covers, m.coverBusy = map[string]coverRef{}, ""
 	if m.startCover(m.games[0].IconPath) != nil {
 		t.Error("allocated an unencodable image id")
 	}
@@ -733,7 +734,7 @@ func TestQuitFlushesAndCleansUp(t *testing.T) {
 
 		// with covers transmitted, the delete-all goes out first, then the
 		// quit — in that order, so the store is freed before the program ends
-		m.transmitted[3] = true
+		m.covers["/x.PNG"] = coverRef{id: 3, cols: 24, rows: 7, shown: true}
 		_, cmd = m.handleKey(key(k))
 		msgs = leaves(cmd)
 		if len(msgs) != 2 {
@@ -999,7 +1000,9 @@ func TestWriteCacheFailurePaths(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "x.png")
 	writeCache(path, tinyPNG(t))
-	if b, err := os.ReadFile(path); err != nil || checkPNG(b) != nil {
+	if b, err := os.ReadFile(path); err != nil {
+		t.Errorf("writeCache didn't produce a file: %v", err)
+	} else if _, err := decodeCover(b); err != nil {
 		t.Errorf("writeCache didn't produce a usable file: %v", err)
 	}
 }
@@ -1010,10 +1013,9 @@ func TestLoadCoverSurfacesFetchErrors(t *testing.T) {
 	}
 }
 
-func TestCheckPNGUndecodable(t *testing.T) {
-	// correct magic, truncated body — the signature check passes, the decode
-	// must not
-	if err := checkPNG(append([]byte(nil), pngMagic...)); err == nil {
+func TestDecodeCoverUndecodable(t *testing.T) {
+	// correct magic, truncated body — the signature passes, the decode must not
+	if _, err := decodeCover([]byte("\x89PNG\r\n\x1a\n")); err == nil {
 		t.Error("a header with no image data was accepted")
 	}
 }

@@ -502,10 +502,23 @@ func (m *model) artPanel() string {
 	}
 
 	var cover string
-	if id, seen := m.coverIDs[g.IconPath]; seen && m.transmitted[id] {
-		rows := make([]string, artRows)
-		for r := range artRows {
-			rows[r] = placementRow(id, r)
+	if ref := m.covers[g.IconPath]; ref.shown {
+		// the placement sits centered in the box at the image's own aspect;
+		// the cells around it are plain blanks, not placeholders. Padded by
+		// hand: a placeholder cell is a private-use rune plus two combining
+		// marks, which is not something to ask a width function about.
+		left := (artCols - ref.cols) / 2
+		top := (artRows - ref.rows) / 2
+		blank := strings.Repeat(" ", artCols)
+		rows := make([]string, 0, artRows)
+		for r := 0; r < top; r++ {
+			rows = append(rows, blank)
+		}
+		for r := range ref.rows {
+			rows = append(rows, strings.Repeat(" ", left)+placementRow(ref.id, r, ref.cols)+strings.Repeat(" ", artCols-left-ref.cols))
+		}
+		for len(rows) < artRows {
+			rows = append(rows, blank)
 		}
 		cover = strings.Join(rows, "\n")
 	} else {
@@ -526,6 +539,9 @@ func (m *model) artPanel() string {
 	}
 	if cat := strings.TrimPrefix(g.Category, "hdd0/"); cat != "" {
 		meta += dimSt.Render(" · " + cat)
+	}
+	if g.Ver != "" {
+		meta += dimSt.Render(" · v" + g.Ver)
 	}
 	parts := []string{
 		coverBoxSt.Render(cover),

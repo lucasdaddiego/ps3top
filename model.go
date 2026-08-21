@@ -41,15 +41,14 @@ type (
 	// coverTickMsg is the debounce behind a console cover fetch: it fires
 	// once the cursor has rested, and only the newest generation is honoured.
 	coverTickMsg struct{ gen int }
-	// coverMsg carries a loaded PNG; coverShownMsg follows once the bytes
+	// coverMsg carries a loaded cover; coverShownMsg follows once the bytes
 	// have gone to the terminal, and is what lets the panel reference them.
 	coverMsg struct {
 		icon string
-		id   int
-		png  []byte
+		c    cover
 		err  error
 	}
-	coverShownMsg struct{ id int }
+	coverShownMsg struct{ icon string }
 	// discoverMsg is a background LAN sweep's answer, run when the cached
 	// address stops answering (DHCP moved the console, or it was off).
 	discoverMsg struct {
@@ -67,6 +66,16 @@ type (
 		err      error
 	}
 )
+
+// coverRef is one cover's life in the terminal: the kitty image id it was
+// (or will be) transmitted under, the placement shaped to its aspect, and
+// whether the bytes have actually gone out — placeholder cells for an id the
+// terminal doesn't hold yet render as nothing.
+type coverRef struct {
+	id         int
+	cols, rows int
+	shown      bool
+}
 
 type confirmAction struct {
 	label  string
@@ -155,11 +164,10 @@ type model struct {
 	flashGen   int // invalidates stale clearFlashMsg ticks
 	alarming   bool
 
-	coverIDs    map[string]int  // icon path → kitty image id
-	transmitted map[int]bool    // ids the terminal holds
-	coverFailed map[string]bool // icons that failed this session; a list reload retries them
-	coverBusy   string          // icon path of the one load in flight ("" = idle)
-	coverGen    int             // invalidates stale coverTickMsg debounce ticks
+	covers      map[string]coverRef // icon path → what the terminal holds for it
+	coverFailed map[string]bool     // icons that failed this session; a list reload retries them
+	coverBusy   string              // icon path of the one load in flight ("" = idle)
+	coverGen    int                 // invalidates stale coverTickMsg debounce ticks
 	nextID      int
 }
 
@@ -172,8 +180,7 @@ func newModel(cli *Client, host string, interval time.Duration, alarm int, artOn
 		artOn:       artOn && artSupported(),
 		cacheDir:    cacheDir,
 		hist:        hist,
-		coverIDs:    map[string]int{},
-		transmitted: map[int]bool{},
+		covers:      map[string]coverRef{},
 		coverFailed: map[string]bool{},
 	}
 	if m.hist == nil { // every read path dereferences it; an empty log is the no-op

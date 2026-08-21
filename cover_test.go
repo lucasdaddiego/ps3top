@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"image"
 	"image/color"
+	"image/jpeg"
 	"image/png"
 	"net/http"
 	"net/http/httptest"
@@ -86,20 +87,23 @@ func TestCorruptCacheEntryIsReplaced(t *testing.T) {
 	if err := os.WriteFile(cache, tinyPNG(t)[:12], 0o644); err != nil {
 		t.Fatal(err)
 	}
-	b, err := loadCover(cli, dir, "/icon.png")
+	c, err := loadCover(cli, dir, "/icon.png")
 	if err != nil {
 		t.Fatalf("didn't recover from a corrupt cache entry: %v", err)
 	}
 	if *hits != 1 {
 		t.Error("corrupt entry was served from cache instead of refetched")
 	}
-	if checkPNG(b) != nil {
+	if _, err := decodeCover(c.png); err != nil {
 		t.Error("returned bytes still aren't a usable PNG")
 	}
 	// and the repaired entry is what's on disk now
 	on, err := os.ReadFile(cache)
-	if err != nil || checkPNG(on) != nil {
-		t.Errorf("cache not repaired: err=%v", err)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeCover(on); err != nil {
+		t.Errorf("cache not repaired: %v", err)
 	}
 }
 
@@ -123,15 +127,62 @@ func TestCoverCacheWritesAtomically(t *testing.T) {
 	}
 }
 
-func TestCheckPNGBounds(t *testing.T) {
-	if err := checkPNG(nil); err == nil {
+// isPNG reports whether b decodes as a PNG — the one format the kitty
+// transmission is allowed to carry.
+func isPNG(b []byte) bool {
+	_, format, err := image.DecodeConfig(bytes.NewReader(b))
+	return err == nil && format == "png"
+}
+
+// tinyJPEG is a cover-pack-shaped JPEG: portrait, like the 260×300 ones
+// webMAN's cover packs ship.
+func tinyJPEG(t *testing.T) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 26, 30))
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, img, nil); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// webMAN serves covers two ways: the ISO's own ICON0 PNG, or a JPEG from a
+// cover pack. The terminal is only ever sent PNG, so a JPEG is converted —
+// once, on the way into the cache — and its pixel size survives for the
+// placement to be shaped by.
+func TestJPEGCoversAreConvertedAndCachedAsPNG(t *testing.T) {
+	dir := t.TempDir()
+	cli, hits := coverServer(t, tinyJPEG(t))
+
+	c, err := loadCover(cli, dir, "/covers/BLES00455.JPG")
+	if err != nil {
+		t.Fatalf("a JPEG cover was refused: %v", err)
+	}
+	if c.w != 26 || c.h != 30 {
+		t.Errorf("size = %d×%d, want 26×30", c.w, c.h)
+	}
+	if !isPNG(c.png) {
+		t.Error("the terminal would have been handed something other than a PNG")
+	}
+	on, err := os.ReadFile(filepath.Join(dir, coverKey("/covers/BLES00455.JPG")))
+	if err != nil || !isPNG(on) {
+		t.Errorf("cache holds the JPEG, not the converted PNG (err %v)", err)
+	}
+	// the second load is the cached PNG, not another conversion
+	if _, err := loadCover(cli, dir, "/covers/BLES00455.JPG"); err != nil || *hits != 1 {
+		t.Errorf("cached JPEG cover refetched (%d hits, %v)", *hits, err)
+	}
+}
+
+func TestDecodeCoverBounds(t *testing.T) {
+	if _, err := decodeCover(nil); err == nil {
 		t.Error("empty body accepted")
 	}
-	if err := checkPNG([]byte("GIF89a....")); err == nil {
-		t.Error("a GIF accepted as a PNG")
+	if _, err := decodeCover([]byte("GIF89a....")); err == nil {
+		t.Error("a GIF accepted as a cover")
 	}
-	if err := checkPNG(tinyPNG(t)); err != nil {
-		t.Errorf("a real PNG rejected: %v", err)
+	if c, err := decodeCover(tinyPNG(t)); err != nil || c.w != 8 || c.h != 8 {
+		t.Errorf("a real PNG rejected or mis-sized: %v, %d×%d", err, c.w, c.h)
 	}
 
 	// a header claiming implausible dimensions never reaches the decoder's
@@ -145,7 +196,7 @@ func TestCheckPNGBounds(t *testing.T) {
 	// patch IHDR width to 100000 and let the CRC be wrong — DecodeConfig should
 	// object either way, which is the point: nothing implausible gets through
 	b[16], b[17], b[18], b[19] = 0x00, 0x01, 0x86, 0xa0
-	if err := checkPNG(b); err == nil {
+	if _, err := decodeCover(b); err == nil {
 		t.Error("a 100000px-wide cover was accepted")
 	}
 }

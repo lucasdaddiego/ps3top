@@ -720,12 +720,12 @@ func TestWriteCacheRenameFailure(t *testing.T) {
 	}
 }
 
-func TestCheckPNGRejectsImplausibleDimensions(t *testing.T) {
+func TestDecodeCoverRejectsImplausibleDimensions(t *testing.T) {
 	var buf bytes.Buffer
 	if err := png.Encode(&buf, image.NewRGBA(image.Rect(0, 0, coverMaxPx+1, 1))); err != nil {
 		t.Fatal(err)
 	}
-	if err := checkPNG(buf.Bytes()); err == nil {
+	if _, err := decodeCover(buf.Bytes()); err == nil {
 		t.Errorf("a %dpx-wide cover was accepted", coverMaxPx+1)
 	}
 }

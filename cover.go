@@ -7,7 +7,8 @@ import (
 	"encoding/hex"
 	"fmt"
 	"image"
-	_ "image/png"
+	"image/jpeg"
+	"image/png"
 	"os"
 	"path/filepath"
 	"time"
@@ -21,29 +22,46 @@ func coverKey(iconPath string) string {
 	return hex.EncodeToString(sum[:8]) + ".png"
 }
 
-// coverMaxPx bounds what we'll hand the terminal to decode. Real webMAN covers
-// are 320×176 ICON0s; anything near this is not one.
+// coverMaxPx bounds what we'll hand the terminal to decode. webMAN covers are
+// 320×176 ICON0s or 260×300 cover-pack JPEGs; anything near this is not one.
 const coverMaxPx = 4096
 
-var pngMagic = []byte("\x89PNG\r\n\x1a\n")
+// cover is an image ready for the terminal: PNG bytes (the one format the
+// kitty transmission sends) plus the pixel size the placement is shaped to.
+type cover struct {
+	png  []byte
+	w, h int
+}
 
-// checkPNG rejects bytes that aren't a PNG the terminal should be asked to
-// decode. webMAN answers 200 for pages that aren't covers at all (an error
-// page, a redirect body), and without this those get written to a .png cache
-// path and re-fed to the terminal's image decoder on every selection, forever —
-// one bad response permanently breaks that one cover with no way to notice why.
-func checkPNG(b []byte) error {
-	if !bytes.HasPrefix(b, pngMagic) {
-		return fmt.Errorf("not a PNG (%d bytes)", len(b))
-	}
-	cfg, _, err := image.DecodeConfig(bytes.NewReader(b))
+// decodeCover accepts the two things webMAN serves as a game icon — the
+// ICON0 PNG from the ISO, or a JPEG from a cover pack — and returns a PNG
+// either way, since that's what goes down the wire to the terminal. Anything
+// else is refused: webMAN answers 200 for pages that aren't covers at all
+// (an error page, a redirect body), and without this those were written to
+// the cache and re-fed to the terminal's decoder on every selection, forever.
+func decodeCover(b []byte) (cover, error) {
+	cfg, format, err := image.DecodeConfig(bytes.NewReader(b))
 	if err != nil {
-		return fmt.Errorf("undecodable PNG: %w", err)
+		return cover{}, fmt.Errorf("not an image (%d bytes)", len(b))
 	}
 	if cfg.Width <= 0 || cfg.Height <= 0 || cfg.Width > coverMaxPx || cfg.Height > coverMaxPx {
-		return fmt.Errorf("implausible cover size %dx%d", cfg.Width, cfg.Height)
+		return cover{}, fmt.Errorf("implausible cover size %dx%d", cfg.Width, cfg.Height)
 	}
-	return nil
+	switch format {
+	case "png":
+		return cover{png: b, w: cfg.Width, h: cfg.Height}, nil
+	case "jpeg":
+		img, err := jpeg.Decode(bytes.NewReader(b))
+		if err != nil {
+			return cover{}, fmt.Errorf("undecodable JPEG: %w", err)
+		}
+		var out bytes.Buffer
+		if err := png.Encode(&out, img); err != nil {
+			return cover{}, err
+		}
+		return cover{png: out.Bytes(), w: cfg.Width, h: cfg.Height}, nil
+	}
+	return cover{}, fmt.Errorf("unsupported image format %q", format)
 }
 
 // coverCached reports whether a cover is already on disk — the cheap check
@@ -54,13 +72,13 @@ func coverCached(cacheDir, iconPath string) bool {
 	return err == nil && fi.Size() > 0
 }
 
-// loadCover returns the PNG for a webMAN icon path, hitting the PS3 only on
-// cache miss.
-func loadCover(cli *Client, cacheDir, iconPath string) ([]byte, error) {
+// loadCover returns the cover for a webMAN icon path, hitting the PS3 only
+// on cache miss. The cache always holds the PNG, so a JPEG is converted once.
+func loadCover(cli *Client, cacheDir, iconPath string) (cover, error) {
 	cache := filepath.Join(cacheDir, coverKey(iconPath))
 	if b, err := os.ReadFile(cache); err == nil && len(b) > 0 {
-		if checkPNG(b) == nil {
-			return b, nil
+		if c, err := decodeCover(b); err == nil {
+			return c, nil
 		}
 		// a cache entry written before this check existed, or a truncated
 		// write — drop it and re-fetch rather than trusting it forever
@@ -70,13 +88,14 @@ func loadCover(cli *Client, cacheDir, iconPath string) ([]byte, error) {
 	defer cancel()
 	b, err := cli.Cover(ctx, iconPath)
 	if err != nil {
-		return nil, err
+		return cover{}, err
 	}
-	if err := checkPNG(b); err != nil {
-		return nil, fmt.Errorf("cover %s: %w", filepath.Base(iconPath), err)
+	c, err := decodeCover(b)
+	if err != nil {
+		return cover{}, fmt.Errorf("cover %s: %w", filepath.Base(iconPath), err)
 	}
-	writeCache(cache, b)
-	return b, nil
+	writeCache(cache, c.png)
+	return c, nil
 }
 
 // writeCache writes through a temp file in the same directory: an interrupted

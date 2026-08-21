@@ -164,7 +164,7 @@ func (m *model) coverWanted() (string, bool) {
 	if !ok || g.IconPath == "" || m.coverFailed[g.IconPath] {
 		return "", false
 	}
-	if id, seen := m.coverIDs[g.IconPath]; seen && m.transmitted[id] {
+	if m.covers[g.IconPath].shown {
 		return "", false
 	}
 	return g.IconPath, true
@@ -173,22 +173,31 @@ func (m *model) coverWanted() (string, bool) {
 // startCover runs the one load: assigns the image id, reads the cache or the
 // console, and hands the PNG to the terminal.
 func (m *model) startCover(icon string) tea.Cmd {
-	id, seen := m.coverIDs[icon]
-	if !seen {
+	if _, seen := m.covers[icon]; !seen {
 		m.nextID++
 		if m.nextID > 255 {
 			m.artOn = false // out of 256-color-encodable ids; give up gracefully
 			return nil
 		}
-		id = m.nextID
-		m.coverIDs[icon] = id
+		m.covers[icon] = coverRef{id: m.nextID}
 	}
 	m.coverBusy = icon
 	cli, cacheDir := m.cli, m.cacheDir
 	return func() tea.Msg {
-		png, err := loadCover(cli, cacheDir, icon)
-		return coverMsg{icon, id, png, err}
+		c, err := loadCover(cli, cacheDir, icon)
+		return coverMsg{icon, c, err}
 	}
+}
+
+// anyShown reports whether the terminal holds any cover — what decides if
+// quitting owes it a delete-all.
+func (m *model) anyShown() bool {
+	for _, c := range m.covers {
+		if c.shown {
+			return true
+		}
+	}
+	return false
 }
 
 // quit closes out the session and frees the terminal's image store before
@@ -196,7 +205,7 @@ func (m *model) startCover(icon string) tea.Cmd {
 // can't race a frame or a transmission still in flight.
 func (m *model) quit() tea.Cmd {
 	m.flushSession()
-	if len(m.transmitted) == 0 {
+	if !m.anyShown() {
 		return tea.Quit
 	}
 	return tea.Sequence(tea.Raw(deleteAllImages), tea.Quit)
@@ -389,12 +398,17 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// transmit, then mark it shown: the load stays busy in between so the
 		// same cover can't be started twice, and the placeholder cells only
 		// appear in a frame once the bytes are ahead of it in the output
-		shown := coverShownMsg{msg.id}
-		return m, tea.Sequence(tea.Raw(transmitEscapes(msg.id, msg.png)), func() tea.Msg { return shown })
+		ref := m.covers[msg.icon]
+		ref.cols, ref.rows = fitCover(msg.c.w, msg.c.h)
+		m.covers[msg.icon] = ref
+		shown := coverShownMsg{msg.icon}
+		return m, tea.Sequence(tea.Raw(transmitEscapes(ref.id, msg.c.png, ref.cols, ref.rows)), func() tea.Msg { return shown })
 
 	case coverShownMsg:
 		m.coverBusy = ""
-		m.transmitted[msg.id] = true
+		ref := m.covers[msg.icon]
+		ref.shown = true
+		m.covers[msg.icon] = ref
 		return m, m.ensureCover()
 
 	case discoverMsg:
