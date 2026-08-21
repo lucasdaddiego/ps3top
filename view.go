@@ -10,8 +10,9 @@ import (
 	"path"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
-	"github.com/muesli/reflow/truncate"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 const (
@@ -46,7 +47,18 @@ var (
 	rsxSt = lipgloss.NewStyle().Foreground(lipgloss.Color("213"))
 )
 
-func (m *model) View() string {
+// View hands the frame to bubbletea. Alt screen is a property of the view in
+// v2 rather than a program option, and the renderer diffs cells itself — the
+// v1-era trick of appending an alternating SGR reset so idle ticker wakeups
+// stayed cheap is gone with the renderer that needed it.
+func (m *model) View() tea.View {
+	v := tea.NewView(m.frame())
+	v.AltScreen = true
+	return v
+}
+
+// frame is the whole screen as one styled string: header, body, footer.
+func (m *model) frame() string {
 	if m.width == 0 {
 		return "starting…"
 	}
@@ -61,20 +73,9 @@ func (m *model) View() string {
 		}
 	}
 	body = lipgloss.NewStyle().Height(m.listH).MaxHeight(m.listH).Render(body)
-	// hard-clip every line to the terminal width: a single wrapped line would
-	// desync bubbletea's line-diff renderer and garble the whole frame
-	frame := lipgloss.NewStyle().MaxWidth(m.width).Render(head + "\n" + body + "\n" + m.footer())
-	// force-dirty: bubbletea v1.3.10's flush() never resets its buffer when a
-	// written frame equals the previous render (standard_renderer.go), which
-	// parks the FPS ticker in a loop that re-allocates the whole frame for the
-	// comparison, 30×/s, all day. Alternating an invisible SGR reset makes
-	// every frame distinct, so the real render path runs once per message and
-	// resets the buffer — idle ticker wakeups then cost ~nothing.
-	m.flip = !m.flip
-	if m.flip {
-		return frame + "\x1b[0m"
-	}
-	return frame
+	// hard-clip every line to the terminal width: a wrapped line would push
+	// every line below it down a row and desync the frame
+	return lipgloss.NewStyle().MaxWidth(m.width).Render(head + "\n" + body + "\n" + m.footer())
 }
 
 func (m *model) header() string {
@@ -100,8 +101,11 @@ func (m *model) header() string {
 	// game state closes the box as its last content line
 	var state string
 	switch {
-	case !m.haveStatus && m.online:
+	case !m.haveStatus && m.lastErr == nil:
+		// no poll has answered yet, either way — not the same as offline
 		state = dimSt.Render("waiting for first status…")
+	case !m.online && m.scanning:
+		state = critSt.Render("✕ console unreachable — ") + dimSt.Render("scanning "+m.scanNets+" for webMAN…")
 	case !m.online:
 		msg := "unreachable"
 		if m.lastErr != nil {
@@ -242,11 +246,14 @@ func boxEdge(width int, b lipgloss.Style, lc, rc string, left, right string) str
 	if right != "" {
 		tail = " " + right + " " + tail
 	}
-	fill := width - lipgloss.Width(s) - lipgloss.Width(tail)
-	if fill < 0 {
-		fill = 0
-	}
-	return s + b.Render(strings.Repeat("─", fill)) + tail
+	return s + rule(b, width-lipgloss.Width(s)-lipgloss.Width(tail)) + tail
+}
+
+// rule is n columns of horizontal line in a style, the frame's one vocabulary
+// for "this space is deliberately empty". Never negative: a too-narrow window
+// gets no rule rather than a panic.
+func rule(st lipgloss.Style, n int) string {
+	return st.Render(strings.Repeat("─", max(0, n)))
 }
 
 // boxMid draws "│ left …pad… right │", ANSI-aware.
@@ -257,10 +264,7 @@ func boxMid(width int, b lipgloss.Style, left, right string) string {
 		rseg = right + " "
 	}
 	tail := b.Render("│")
-	pad := width - lipgloss.Width(line) - lipgloss.Width(rseg) - lipgloss.Width(tail)
-	if pad < 1 {
-		pad = 1
-	}
+	pad := max(1, width-lipgloss.Width(line)-lipgloss.Width(rseg)-lipgloss.Width(tail))
 	return line + strings.Repeat(" ", pad) + rseg + tail
 }
 
@@ -353,11 +357,7 @@ func (m *model) tabLine() string {
 	if m.thermalOn {
 		left := dimSt.Render("── ") + tabOnSt.Render(" thermals ") + dimSt.Render(" ")
 		right := fmt.Sprintf(" alarm %d° · window %s ", m.alarm, fmtDur(int(m.interval.Seconds())*histLen))
-		fill := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 2
-		if fill < 0 {
-			fill = 0
-		}
-		return left + dimSt.Render(strings.Repeat("─", fill)) + dimSt.Render(right) + dimSt.Render("──")
+		return left + rule(dimSt, m.width-lipgloss.Width(left)-lipgloss.Width(right)-2) + dimSt.Render(right+"──")
 	}
 
 	var tabs strings.Builder
@@ -386,11 +386,7 @@ func (m *model) tabLine() string {
 	if m.sortRecent { // alphabetical is the default, so only the other one is named
 		pos = " recent ·" + pos
 	}
-	fill := m.width - lipgloss.Width(left) - lipgloss.Width(pos) - 2
-	if fill < 0 {
-		fill = 0
-	}
-	return left + dimSt.Render(strings.Repeat("─", fill)) + dimSt.Render(pos) + dimSt.Render("──")
+	return left + rule(dimSt, m.width-lipgloss.Width(left)-lipgloss.Width(pos)-2) + dimSt.Render(pos+"──")
 }
 
 // PS3 thermal reality (PSX-Place/GBAtemp consensus, webMAN's own fan target
@@ -432,10 +428,28 @@ func (m *model) renderList() string {
 	return strings.Join(out, "\n")
 }
 
+// rowStyles is the palette a list row is drawn with. The selected row carries
+// a background across its whole width, so every segment — including the
+// padding — goes through a style; the plain row's "styles" are mostly the
+// identity, which is what lets one render path serve both.
+type rowStyles struct {
+	bar           string
+	dim, main, ok lipgloss.Style
+}
+
+var (
+	rowPlain = rowStyles{bar: "  ", dim: dimSt, main: lipgloss.NewStyle(), ok: okSt}
+	rowSel   = rowStyles{bar: selBarSt.Render("▌ "), dim: selDimSt, main: selMainSt, ok: selOkSt}
+)
+
 func (m *model) renderRow(gi int, sel bool) string {
 	g := m.games[gi]
 	w := m.listWidth()
 	numW := max(1, m.numW)
+	st := rowPlain
+	if sel {
+		st = rowSel
+	}
 
 	num := fmt.Sprintf("%*d", numW, m.secNums[gi])
 	idCol := strings.Repeat(" ", 11)
@@ -462,38 +476,23 @@ func (m *model) renderRow(gi int, sel bool) string {
 	if m.playColW > 0 {
 		avail -= m.playColW + 2 // +2 keeps it off the mounted mark
 	}
-	tw := clamp(m.titleColW, 10, avail)
-	title := truncPad(g.Title, tw)
+	title := truncPad(g.Title, clamp(m.titleColW, 10, avail))
 
-	if sel {
-		var b strings.Builder
-		b.WriteString(selBarSt.Render("▌ "))
-		b.WriteString(selDimSt.Render(num + "  "))
-		b.WriteString(selMainSt.Render(title + " "))
-		b.WriteString(selDimSt.Render(idCol))
-		if mark != "" {
-			b.WriteString(selOkSt.Render(mark))
-		}
-		if pad := w - lipgloss.Width(b.String()) - lipgloss.Width(played); pad > 0 {
-			b.WriteString(selMainSt.Render(strings.Repeat(" ", pad)))
-		}
-		if played != "" {
-			b.WriteString(selDimSt.Render(played))
-		}
-		return b.String()
-	}
-
-	out := "  " + dimSt.Render(num) + "  " + title + " " + dimSt.Render(idCol)
+	var b strings.Builder
+	b.WriteString(st.bar)
+	b.WriteString(st.dim.Render(num + "  "))
+	b.WriteString(st.main.Render(title + " "))
+	b.WriteString(st.dim.Render(idCol))
 	if mark != "" {
-		out += " " + okSt.Render("● mounted")
+		b.WriteString(st.ok.Render(mark))
+	}
+	if pad := w - lipgloss.Width(b.String()) - lipgloss.Width(played); pad > 0 {
+		b.WriteString(st.main.Render(strings.Repeat(" ", pad)))
 	}
 	if played != "" {
-		if pad := w - lipgloss.Width(out) - lipgloss.Width(played); pad > 0 {
-			out += strings.Repeat(" ", pad)
-		}
-		out += dimSt.Render(played)
+		b.WriteString(st.dim.Render(played))
 	}
-	return out
+	return b.String()
 }
 
 func (m *model) artPanel() string {
@@ -505,12 +504,18 @@ func (m *model) artPanel() string {
 	var cover string
 	if id, seen := m.coverIDs[g.IconPath]; seen && m.transmitted[id] {
 		rows := make([]string, artRows)
-		for r := 0; r < artRows; r++ {
+		for r := range artRows {
 			rows[r] = placementRow(id, r)
 		}
 		cover = strings.Join(rows, "\n")
 	} else {
-		cover = lipgloss.Place(artCols, artRows, lipgloss.Center, lipgloss.Center, dimSt.Render("· · ·"))
+		// "no cover" is a settled answer, "· · ·" a pending one — a cover
+		// webMAN can't serve shouldn't look like one still loading
+		wait := "· · ·"
+		if m.coverFailed[g.IconPath] {
+			wait = "no cover"
+		}
+		cover = lipgloss.Place(artCols, artRows, lipgloss.Center, lipgloss.Center, dimSt.Render(wait))
 	}
 
 	cw := artCols + 2
@@ -601,11 +606,7 @@ func (m *model) footer() string {
 // bookend wraps content in the "── content ────" rule vocabulary.
 func (m *model) bookend(content string) string {
 	lead := dimSt.Render("── ")
-	fill := m.width - lipgloss.Width(lead) - lipgloss.Width(content) - 1
-	if fill < 0 {
-		fill = 0
-	}
-	return lead + content + " " + dimSt.Render(strings.Repeat("─", fill))
+	return lead + content + " " + rule(dimSt, m.width-lipgloss.Width(lead)-lipgloss.Width(content)-1)
 }
 
 // --- helpers ---
@@ -626,7 +627,7 @@ func truncPad(s string, w int) string {
 		return ""
 	}
 	if lipgloss.Width(s) > w {
-		s = truncate.StringWithTail(s, uint(w), "…")
+		s = ansi.Truncate(s, w, "…")
 	}
 	if pad := w - lipgloss.Width(s); pad > 0 {
 		s += strings.Repeat(" ", pad)

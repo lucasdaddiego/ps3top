@@ -1,15 +1,13 @@
 package main
 
 import (
-	"context"
 	"flag"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // Set via -ldflags at build time (see the Makefile). The defaults are what a
@@ -51,19 +49,24 @@ func usage() {
 }
 
 func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "ps3top:", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
 	host := flag.String("host", os.Getenv("PS3TOP_HOST"), "PS3 address (default: auto-discover; env PS3TOP_HOST)")
 	interval := flag.Duration("interval", 15*time.Second, "status poll interval (min 5s)")
 	alarm := flag.Int("alarm", 80, "temp alarm threshold, °C (PS3 overheats/shuts down ~85)")
 	noArt := flag.Bool("no-art", false, "disable cover art")
-	once := flag.Bool("once", false, "print status once and exit (no TUI)")
-	stats := flag.Bool("stats", false, "print play history and exit (no console needed)")
 	ver := flag.Bool("version", false, "print version")
 	flag.CommandLine.Usage = usage
 	flag.Parse()
 
 	if *ver {
 		fmt.Println(versionString())
-		return
+		return nil
 	}
 	if *interval < 5*time.Second {
 		*interval = 5 * time.Second
@@ -71,14 +74,7 @@ func main() {
 
 	dataRoot, err := dataDir()
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "ps3top:", err)
-		os.Exit(1)
-	}
-
-	// --stats reads the local log only, so it works with the console off
-	if *stats {
-		runStats(dataRoot)
-		return
+		return err
 	}
 
 	cacheRoot, err := os.UserCacheDir()
@@ -87,13 +83,19 @@ func main() {
 	}
 	cacheRoot = filepath.Join(cacheRoot, "ps3top")
 	cacheDir := filepath.Join(cacheRoot, "covers")
+	hostCache := filepath.Join(cacheRoot, "host")
 	os.MkdirAll(cacheDir, 0o755)
 
-	if *host == "" {
-		h, err := discoverHost(filepath.Join(cacheRoot, "host"))
+	// With no --host, a cached address is taken on trust: the first poll is
+	// the verification, and a stale cache is re-swept in the background while
+	// the dashboard already shows. That saves the verify-then-poll double
+	// request every launch used to make, and it's what lets ps3top start
+	// before the console is on.
+	auto := *host == ""
+	if auto {
+		h, err := discoverHost(hostCache)
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "ps3top:", err)
-			os.Exit(1)
+			return err
 		}
 		*host = h
 	}
@@ -101,17 +103,11 @@ func main() {
 	// otherwise prefix every endpoint and fail as if the console were at fault
 	normHost, err := normalizeHost(*host)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "ps3top: --host:", err)
-		os.Exit(1)
+		return fmt.Errorf("--host: %w", err)
 	}
 	*host = normHost
 
 	cli := NewClient(*host)
-
-	if *once {
-		runOnce(cli, *host)
-		return
-	}
 
 	hist, err := loadHistory(dataRoot)
 	if err != nil {
@@ -120,83 +116,12 @@ func main() {
 		fmt.Fprintln(os.Stderr, "ps3top: history:", err)
 	}
 
-	// 30fps caps the renderer's repaint ticker — half the default wakeups, and
+	// 30fps caps the renderer's flush ticker — half the default wakeups, and
 	// with a 15s poll cadence even that is mostly idle no-ops.
 	m := newModel(cli, *host, *interval, *alarm, !*noArt, cacheDir, hist)
-	if _, err := tea.NewProgram(m, tea.WithAltScreen(), tea.WithFPS(30)).Run(); err != nil {
-		fmt.Fprintln(os.Stderr, "ps3top:", err)
-		os.Exit(1)
+	if auto {
+		m.hostCache = hostCache
 	}
-}
-
-func runOnce(cli *Client, host string) {
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
-	defer cancel()
-
-	st, err := cli.Status(ctx)
-	if err != nil {
-		fmt.Printf("ps3top — %s OFFLINE (%v)\n", host, err)
-		os.Exit(1)
-	}
-	fmt.Printf("ps3top — %s ONLINE · FW %s · webMAN %s\n", host, st.Firmware, st.WMVersion)
-	switch {
-	case st.InGame:
-		fmt.Printf("In game: %s [%s]\n", st.GameTitle, st.GameID)
-	case st.MountedISO != "":
-		fmt.Printf("XMB — mounted: %s\n", path.Base(st.MountedISO))
-	default:
-		fmt.Println("XMB — no disc mounted")
-	}
-	fmt.Printf("CPU %s  RSX %s  FAN %s (%s)  MEM %s  HDD %s\n",
-		plainInt(st.CPUTemp, "°C"), plainInt(st.RSXTemp, "°C"), plainInt(st.FanPct, "%"),
-		st.FanMode, plainMem(st.MemFreeKB), plainHDD(st.HDDFreeGB))
-	if n := st.missing(); n > 0 {
-		fmt.Printf("warning: %d of %d status fields not found — webMAN markup may have changed\n", n, statusFields)
-	}
-	if st.Uptime != "" {
-		fmt.Printf("up %s", st.Uptime)
-		if st.PlayTime != "" {
-			fmt.Printf("  play %s", st.PlayTime)
-		}
-		fmt.Println()
-	}
-	if st.Lifetime != "" {
-		fmt.Println("lifetime:", st.Lifetime)
-	}
-
-	games, err := cli.Games(ctx)
-	if err != nil {
-		fmt.Println("games: error:", err)
-		return
-	}
-	psx := 0
-	for _, g := range games {
-		if g.IsPSX() {
-			psx++
-		}
-	}
-	fmt.Printf("games: %d (%d PS3, %d PSX)\n", len(games), len(games)-psx, psx)
-}
-
-// --once is scripting-facing, so an absent field prints ASCII "n/a" rather
-// than the TUI's em dash.
-func plainInt(v int, unit string) string {
-	if v == unknown {
-		return "n/a"
-	}
-	return fmt.Sprintf("%d%s", v, unit)
-}
-
-func plainMem(kb int) string {
-	if kb == unknown {
-		return "n/a"
-	}
-	return fmt.Sprintf("%.1fM", float64(kb)/1024)
-}
-
-func plainHDD(gb float64) string {
-	if gb == unknown {
-		return "n/a"
-	}
-	return fmt.Sprintf("%.1fG", gb)
+	_, err = tea.NewProgram(m, tea.WithFPS(30)).Run()
+	return err
 }

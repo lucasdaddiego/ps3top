@@ -91,9 +91,6 @@ func (m *model) flushSession() bool {
 		PeakCPU: peakC,
 		PeakRSX: peakR,
 	}
-	if m.st.HDDFreeGB != unknown {
-		rec.HDDFreeGB = m.st.HDDFreeGB
-	}
 	if err := m.hist.add(rec); err != nil {
 		// the session stays open so the next poll retries. Closing it here meant
 		// a failed write lost the record for good, while the totals on screen

@@ -25,26 +25,30 @@ values render green; the active console tab is highlighted in the brand blue.
 
 ```sh
 go install github.com/lucasdaddiego/ps3top@latest   # → ~/go/bin/ps3top
-ps3top              # TUI (auto-discovers the console)
-ps3top --once       # plain one-shot status (scripting/cron friendly)
-ps3top --stats      # play history; local-only, works with the console off
+ps3top              # auto-discovers the console
 ```
 
 From a clone: `make install` puts a stripped release build in `~/.bin`;
-`make` lists the other targets (build, run, test, clean).
+`make` lists the other targets (build, run, test, lint, tidy, clean).
 
 Flags: `--host` (default: auto-discover; env `PS3TOP_HOST`) · `--interval`
-(15s, min 5s) · `--alarm` (80°C) · `--no-art` · `--once` · `--stats` ·
-`--version`. `--help` also prints the TUI key cheat sheet — the in-app keybar
+(15s, min 5s) · `--alarm` (80°C) · `--no-art` · `--version`. It's a TUI and
+nothing else — no one-shot or scripting mode. `--help` also prints the TUI key cheat sheet — the in-app keybar
 shows the same keys, but a narrow terminal can't fit them all.
 
 With no `--host`, ps3top finds the console itself: it sweeps the machine's
 private IPv4 /24s (TCP :80, then a `GET /cpursx.ps3` that must answer with the
 webMAN banner — anything else on port 80 is rejected), takes the first hit,
 and caches it (`~/Library/Caches/ps3top/host` on macOS, XDG cache on Linux).
-Later launches probe the cached address only; if DHCP moved the console, the
-stale probe fails and a fresh sweep runs. A cold sweep takes a few seconds;
-two consoles on one LAN → first answer wins, use `--host` to pick.
+Later launches take the cached address on trust and go straight to the
+dashboard — the first status poll *is* the verification, so there's no
+probe-then-poll double request, and a console that's still off gets an
+offline dashboard that comes alive when it boots rather than a refusal to
+start. If that first poll fails, one background sweep runs per outage (the
+header says `scanning 192.168.0.0/24 for webMAN…`); a console DHCP moved is
+adopted and re-cached, a console that's simply off is retried on its old
+address every 15s, and `r` asks for another sweep. A cold sweep takes a few
+seconds; two consoles on one LAN → first answer wins, use `--host` to pick.
 
 (Wake-on-LAN existed in 0.1.0 and was removed: the PS3 only listens for magic
 packets with Remote Start on, that toggle is gated behind registering a
@@ -229,9 +233,8 @@ twice — only readings starting within five minutes of each other merge.
 What it buys you: `s` toggles the list between alphabetical and
 recently-played (so the handful of games you actually play float above the
 alphabetical wall), rows carry a dim play total, the art panel gains
-`38h12m · 9 sessions` / `last 2h ago`, quitting a game flashes
-`Borderlands™ 2 — 2h14m (peak 71°/74°)`, and `ps3top --stats` prints the
-leaderboard with peak temps and HDD drift since the first record.
+`38h12m · 9 sessions` / `last 2h ago`, and quitting a game flashes
+`Borderlands™ 2 — 2h14m (peak 71°/74°)`.
 
 ## Keys
 
@@ -279,7 +282,10 @@ skips the confirm.
 
 - One `GET /cpursx.ps3` per 15s (webMAN's own web-UI refresh cadence; the page
   is ~6.6KB and carries every field server-rendered). Immediate extra poll
-  after an action. **One console-state request in flight at a time** — status
+  after an action. Launch is that one poll, alone: the game list is fetched
+  once the first status has answered (and again whenever the console comes
+  back from an outage), so startup never has more than two connections open
+  and a host that turns out not to be webMAN is never asked for a list. **One console-state request in flight at a time** — status
   polls, actions and fan commands share one gate, so a scheduled poll can't
   race a fan reply and overwrite the newer reading with the older one; a poll
   that comes due while busy is deferred, not dropped. Fresh connection each
@@ -301,7 +307,12 @@ skips the confirm.
   timeout — a rescan walks every ISO directory) and reloads 1.5s after the
   reply, in case the XML is still being written when webMAN answers.
 - Covers (`/dev_hdd0/tmp/wmtmp/*.PNG`, 320×176) fetched once per game, cached in
-  `~/Library/Caches/ps3top/covers/`.
+  `~/Library/Caches/ps3top/covers/`. A cached cover shows at once; an uncached
+  one is requested only after the cursor has rested on its row for 150ms, and
+  never more than one at a time — holding `j` through a fresh library used to
+  open one connection per row it passed, at a server with ~4 slots. A cover
+  webMAN can't serve is remembered for the session (`no cover` in the panel)
+  instead of being re-requested on every visit; `r`/`g` retry it.
 - Actions: `/mount_ps3/<path>` · `/mount_ps3/unmount` · `/play.ps3` (launch
   mounted) · `/play.ps3/<path>` (mount+launch) · `/popup.ps3/<text>` ·
   `/refresh.ps3?xmb` (library rescan) · `/shutdown.ps3` · `/restart.ps3` ·
@@ -313,28 +324,33 @@ skips the confirm.
 
 ## Footprint
 
-Meant to sit open all day: the renderer is capped at 30fps, repaints only
-happen on a keypress or a poll, and the only periodic work is the one 15s
-status GET plus its ~15 regex matches over 6.6KB. `View` appends an
-alternating invisible SGR reset to every frame — bubbletea v1's `flush()`
-never resets its buffer after an unchanged frame, which would otherwise leave
-the fps ticker re-allocating the whole frame 30×/s all day just to compare it
-(details in the `View` comment). Cover PNGs are handed to the terminal and
-not retained in the model; the *terminal* keeps each browsed cover (~225KB
-decoded) until ps3top exits and deletes them all. Idle: ~12–14MB RSS (Go
-runtime floor), CPU rounds to zero.
+Meant to sit open all day: the renderer (bubbletea v2's cell-diffing one) is
+capped at 30fps, a frame is only built on a keypress or a poll, and an idle
+flush tick is a pointer-equal string compare and nothing else. The only
+periodic work is the one 15s status GET plus its ~15 regex matches over
+6.6KB. Cover PNGs are handed to the terminal and not retained in the model;
+the *terminal* keeps each browsed cover (~225KB decoded) until ps3top exits
+and deletes them all. Idle: ~12–14MB RSS (Go runtime floor), CPU rounds to
+zero.
 
 Sparklines and play history don't move any of that: the samples come from the
-poll that already runs (three fixed 240-int rings, ~6KB total, no allocation
-per poll), and the history file is appended once per finished session — a few
-hundred bytes a day at worst, read once at startup.
+poll that already runs (three fixed 240-int rings, ~6KB total; the window each
+frame reads is materialized once per poll, not once per read), and the history
+file is appended once per finished session — a few hundred bytes a day at
+worst, read once at startup.
 
 ## Cover art
 
 Kitty graphics protocol in Unicode-placeholder mode (kitty & Ghostty; detected
 via `TERM`/`TERM_PROGRAM`). Images are transmitted once with `q=2` and rendered
-as placeholder cells, which survive bubbletea redraws. Unsupported terminal or
-`--no-art` → text-only, no errors.
+as placeholder cells, which survive bubbletea redraws. The transmission goes
+out through `tea.Raw`, which bubbletea flushes from the same ticker as the
+frame and ahead of it, and the panel only references an image once that write
+has been sequenced — so the bytes are always in the terminal before the cells
+that point at them. `art_test.go` drives a headless renderer and checks the
+placeholder, its diacritics and the `38;5;id` foreground come out the other
+side intact, since the cell renderer re-encodes everything it draws.
+Unsupported terminal or `--no-art` → text-only, no errors.
 
 ## Source layout
 
@@ -344,7 +360,7 @@ files carve it by concern instead (the same map lives in `doc.go`):
 
 | file | owns |
 |---|---|
-| `main.go` | CLI flags, `--once` and `--stats` entry points |
+| `main.go` | flags, discovery hand-off, program start |
 | `model.go` | the bubbletea model, its messages, list mechanics |
 | `update.go` | `Init`/`Update`/`handleKey`, network commands, the action gate |
 | `view.go` | every frame of the main screen, styles, shared formatters |
@@ -353,7 +369,7 @@ files carve it by concern instead (the same map lives in `doc.go`):
 | `thermal.go` | the thermal screen (`t`) that fan.go's queue drives |
 | `webman.go` | HTTP client + parsers for webMAN's pages |
 | `discover.go` | the LAN sweep behind auto-discovery |
-| `history.go` | the NDJSON play log and `--stats` |
+| `history.go` | the NDJSON play log behind the play totals |
 | `spark.go` | metric rings + sparkline renderer |
 | `art.go` / `cover.go` | kitty-graphics plumbing / cover fetch + cache |
 
@@ -375,7 +391,7 @@ trend noise band, `history_test.go` covers session recording (including that
 length comes from webMAN's counter, not ps3top's uptime) and the recency sort,
 and `ui_test.go` renders whole frames in every state ps3top sits in all day —
 asserting each line lands on exactly the terminal width, since a wrapped line
-desyncs bubbletea's line-diff renderer and garbles the frame. It also pins the
+pushes everything below it down a row and shears the frame. It also pins the
 header's degradation order, which is a judgment call worth not regressing.
 
 `thermal_test.go` covers the glyph font and plot geometry, that the fan keys

@@ -6,7 +6,9 @@ package main
 // most one status request in flight.
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -44,7 +46,6 @@ type Status struct {
 	MountedISO string // "/dev_hdd0/PS3ISO/SampleGame2.iso", "" if nothing mounted
 	Firmware   string // "4.93 CEX PS3HEN 3.5.0"
 	WMVersion  string // "1.47.48q"
-	Lifetime   string // "218d 07:19:14 • 2,709 ON • 2,644 OFF (65)" (raw)
 	LifeDays   int    // 218 — total powered-on days (syscon counter)
 	Boots      int    // 2709 — power-on count
 	HardOffs   int    // 65 — power-ons minus clean power-offs = unclean shutdowns
@@ -80,8 +81,6 @@ type Game struct {
 	Category string // "hdd0/PS3ISO"
 }
 
-func (g Game) IsPSX() bool { return g.Console() == "PSX" }
-
 // consoleOrder is chronological — release order, oldest first.
 var consoleOrder = []string{"PSX", "PS2", "PSP", "PS3"}
 
@@ -110,7 +109,6 @@ func consoleRank(name string) int {
 
 type Client struct {
 	base string
-	host string
 	http *http.Client
 }
 
@@ -154,7 +152,6 @@ func normalizeHost(h string) (string, error) {
 func NewClient(host string) *Client {
 	return &Client{
 		base: "http://" + host,
-		host: host,
 		http: &http.Client{
 			// Hard backstop only — every caller passes a context with the real
 			// deadline (status 6s, games/covers 8s, rescan 30s — the long pole,
@@ -204,10 +201,24 @@ func (c *Client) fire(ctx context.Context, path string) error {
 	return err
 }
 
+// errNotWebMAN is what Status returns for a host that answers /cpursx.ps3
+// with something other than webMAN's page. It's the discovery signal: the
+// address came from a cache or a sweep, and anything else on port 80 of a
+// LAN host — a router, a printer — will happily 200 a path it doesn't know.
+// Without the check that page parses as a console with every field missing.
+var errNotWebMAN = errors.New("not a webMAN console")
+
 func (c *Client) Status(ctx context.Context) (Status, error) {
-	body, err := c.get(ctx, "/cpursx.ps3")
+	return c.statusPage(ctx, "/cpursx.ps3")
+}
+
+func (c *Client) statusPage(ctx context.Context, path string) (Status, error) {
+	body, err := c.get(ctx, path)
 	if err != nil {
 		return Status{}, err
+	}
+	if !bytes.Contains(body, []byte("webMAN")) {
+		return Status{}, errNotWebMAN
 	}
 	return parseStatus(string(body)), nil
 }
@@ -257,11 +268,7 @@ const (
 )
 
 func (c *Client) Fan(ctx context.Context, cmd string) (Status, error) {
-	body, err := c.get(ctx, "/cpursx.ps3?"+cmd)
-	if err != nil {
-		return Status{}, err
-	}
-	return parseStatus(string(body)), nil
+	return c.statusPage(ctx, "/cpursx.ps3?"+cmd)
 }
 
 // --- parsers (markers pinned from testdata/cpursx_ingame.html) ---
@@ -301,7 +308,6 @@ func parseStatus(html string) Status {
 		GameID:    matchStr(reGameID, html),
 		Firmware:  matchStr(reFW, html),
 		WMVersion: matchStr(reWM, html),
-		Lifetime:  matchStr(reLifetime, html),
 	}
 	s.CPUTemp = matchInt(reCPU, html)
 	s.RSXTemp = matchInt(reRSX, html)
@@ -339,7 +345,8 @@ func parseStatus(html string) Status {
 	if m := reMounted.FindStringSubmatch(html); m != nil {
 		s.MountedISO = sanitize(m[1])
 	}
-	if m := reLifeBits.FindStringSubmatch(s.Lifetime); m != nil {
+	// "218d 07:19:14 • 2,709 ON • 2,644 OFF (65)" — the syscon counters
+	if m := reLifeBits.FindStringSubmatch(matchStr(reLifetime, html)); m != nil {
 		s.LifeDays, _ = strconv.Atoi(m[1])
 		s.Boots, _ = strconv.Atoi(strings.ReplaceAll(m[2], ",", ""))
 		s.HardOffs, _ = strconv.Atoi(m[3])

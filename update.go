@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 const (
@@ -26,8 +26,14 @@ const (
 	rescanSettle  = 1500 * time.Millisecond
 )
 
+// Init starts with the status poll alone. The game list follows the first
+// good status (see statusMsg) rather than riding alongside it: that keeps
+// launch to one connection at a time against a server with ~4 slots, never
+// asks a host that turned out not to be webMAN for a game list, and means a
+// console that's off at launch gets its list the moment it answers — the old
+// parallel fetch failed once and was never retried until r.
 func (m *model) Init() tea.Cmd {
-	return tea.Batch(m.fetchStatus(), m.fetchGames(), m.tick(m.interval))
+	return tea.Batch(m.fetchStatus(), m.tick(m.interval))
 }
 
 // --- commands ---
@@ -121,23 +127,52 @@ func (m *model) catchUp() tea.Cmd {
 	return m.fetchStatus()
 }
 
+// coverSettle is how long the cursor rests on an uncached row before its
+// cover is asked of the console. Holding j through a fresh library used to
+// fire one GET per row passed — dozens of concurrent connections at a server
+// with ~4 slots, each for a cover the eye never saw, and enough to starve the
+// status poll behind them. Cache hits skip the wait: they cost the console
+// nothing and the eye notices 150ms.
+const coverSettle = 150 * time.Millisecond
+
+// ensureCover gets the selected game's cover on screen: immediately when it's
+// already on disk, after coverSettle when it has to come from the console,
+// and never more than one load at a time — the in-flight one re-checks the
+// selection when it lands, so a fast scroll fetches where the cursor stops,
+// not everywhere it went.
 func (m *model) ensureCover() tea.Cmd {
-	// artShown, not artOn: with the panel hidden (narrow window) a fetch would
-	// hit the PS3 and burn a transmission id for zero visible output
-	if !m.artShown() {
+	icon, ok := m.coverWanted()
+	if !ok || m.coverBusy != "" {
 		return nil
+	}
+	if coverCached(m.cacheDir, icon) {
+		return m.startCover(icon)
+	}
+	m.coverGen++
+	gen := m.coverGen
+	return tea.Tick(coverSettle, func(time.Time) tea.Msg { return coverTickMsg{gen} })
+}
+
+// coverWanted names the selected game's icon if it still needs loading.
+// artShown, not artOn: with the panel hidden (narrow window) a fetch would hit
+// the PS3 and burn a transmission id for zero visible output.
+func (m *model) coverWanted() (string, bool) {
+	if !m.artShown() {
+		return "", false
 	}
 	g, ok := m.selectedGame()
-	if !ok || g.IconPath == "" {
-		return nil
+	if !ok || g.IconPath == "" || m.coverFailed[g.IconPath] {
+		return "", false
 	}
-	icon := g.IconPath
-	if id, seen := m.coverIDs[icon]; seen && m.transmitted[id] {
-		return nil
+	if id, seen := m.coverIDs[g.IconPath]; seen && m.transmitted[id] {
+		return "", false
 	}
-	if m.coverBusy[icon] {
-		return nil
-	}
+	return g.IconPath, true
+}
+
+// startCover runs the one load: assigns the image id, reads the cache or the
+// console, and hands the PNG to the terminal.
+func (m *model) startCover(icon string) tea.Cmd {
 	id, seen := m.coverIDs[icon]
 	if !seen {
 		m.nextID++
@@ -148,15 +183,38 @@ func (m *model) ensureCover() tea.Cmd {
 		id = m.nextID
 		m.coverIDs[icon] = id
 	}
-	m.coverBusy[icon] = true
+	m.coverBusy = icon
 	cli, cacheDir := m.cli, m.cacheDir
 	return func() tea.Msg {
 		png, err := loadCover(cli, cacheDir, icon)
-		if err != nil {
-			return coverMsg{icon, id, err}
-		}
-		rawWrite(transmitEscapes(id, png))
-		return coverMsg{icon, id, nil}
+		return coverMsg{icon, id, png, err}
+	}
+}
+
+// quit closes out the session and frees the terminal's image store before
+// the program exits — in that order, through the renderer, so the delete
+// can't race a frame or a transmission still in flight.
+func (m *model) quit() tea.Cmd {
+	m.flushSession()
+	if len(m.transmitted) == 0 {
+		return tea.Quit
+	}
+	return tea.Sequence(tea.Raw(deleteAllImages), tea.Quit)
+}
+
+// sweepLAN runs discovery in the background, for a cached address that has
+// stopped answering. Once per offline stretch: the common case is a console
+// that's simply off, and re-probing 254 hosts every 15s to learn that again
+// is noise on somebody's network.
+func (m *model) sweepLAN() tea.Cmd {
+	if m.hostCache == "" || m.scanning || m.swept {
+		return nil
+	}
+	m.scanning, m.swept = true, true
+	m.scanNets = subnetNames(localNets())
+	return func() tea.Msg {
+		host, err := findConsole(nil)
+		return discoverMsg{host, err}
 	}
 }
 
@@ -196,14 +254,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// record the outage as gaps so the sparkline's x axis stays
 			// honest — an offline stretch is blank, not silently compressed
 			m.pushSamples(Status{CPUTemp: unknown, RSXTemp: unknown, FanPct: unknown})
-			return m, nil
+			// an auto-discovered address that doesn't answer may have moved
+			return m, m.sweepLAN()
 		}
+		wasOnline := m.online
 		m.online, m.haveStatus, m.lastErr = true, true, nil
+		m.swept = false // the next outage earns its own sweep
 		m.st = msg.st
 		m.pushSamples(msg.st)
+		var cmds []tea.Cmd
 		nowAlarming := msg.st.CPUTemp >= m.alarm || msg.st.RSXTemp >= m.alarm
 		if nowAlarming && !m.alarming {
-			rawWrite("\a")
+			cmds = append(cmds, tea.Raw("\a")) // the bell, once, on the way into the alarm
 		}
 		m.alarming = nowAlarming
 
@@ -224,9 +286,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// shouldn't re-warn
 		m.prevMissing = msg.st.missing()
 		if flashed {
-			return m, m.clearFlashLater()
+			cmds = append(cmds, m.clearFlashLater())
 		}
-		return m, nil
+		// the game list loads on the way online — at launch, and again after
+		// an outage, since a reboot is the usual reason for one and the list
+		// is a 30KB static read
+		if !wasOnline {
+			cmds = append(cmds, m.fetchGames())
+		}
+		return m, tea.Batch(cmds...)
 
 	case gamesMsg:
 		if msg.err != nil {
@@ -238,6 +306,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// survive the rebuild, so the selection is re-found by identity after
 		prevSel, hadSel := m.selectedGame()
 		m.games = msg.games
+		m.coverFailed = map[string]bool{} // a fresh list is the moment to retry a cover that 404'd
 		m.titleColW = 20
 		m.secNums = make([]int, len(msg.games))
 		perSec := map[string]int{}
@@ -298,12 +367,50 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case reloadMsg:
 		return m, m.fetchGames()
 
-	case coverMsg:
-		m.coverBusy[msg.icon] = false
-		if msg.err == nil {
-			m.transmitted[msg.id] = true
+	case coverTickMsg:
+		// only the newest tick counts: every cursor move on an uncached row
+		// bumped the generation, so older ticks are rows the cursor left
+		if msg.gen != m.coverGen || m.coverBusy != "" {
+			return m, nil
+		}
+		if icon, ok := m.coverWanted(); ok {
+			return m, m.startCover(icon)
 		}
 		return m, nil
+
+	case coverMsg:
+		if msg.err != nil {
+			// remembered, not retried: a cover webMAN can't serve would
+			// otherwise cost the console a request on every visit to its row
+			m.coverBusy = ""
+			m.coverFailed[msg.icon] = true
+			return m, m.ensureCover() // the cursor may have moved on meanwhile
+		}
+		// transmit, then mark it shown: the load stays busy in between so the
+		// same cover can't be started twice, and the placeholder cells only
+		// appear in a frame once the bytes are ahead of it in the output
+		shown := coverShownMsg{msg.id}
+		return m, tea.Sequence(tea.Raw(transmitEscapes(msg.id, msg.png)), func() tea.Msg { return shown })
+
+	case coverShownMsg:
+		m.coverBusy = ""
+		m.transmitted[msg.id] = true
+		return m, m.ensureCover()
+
+	case discoverMsg:
+		m.scanning = false
+		if msg.err != nil {
+			// nothing found: the cached address stays, and the tick keeps
+			// polling it — a console that's off comes back on the same lease
+			return m, nil
+		}
+		if msg.host != m.host {
+			m.host = msg.host
+			m.cli = NewClient(msg.host)
+			rememberHost(m.hostCache, msg.host)
+		}
+		m.flash = "found console at " + msg.host
+		return m, tea.Batch(m.clearFlashLater(), m.refreshNow())
 
 	case fanMsg:
 		m.fanBusy = false
@@ -330,17 +437,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.handleKey(msg)
 	}
 	return m, nil
 }
 
-func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if msg.String() == "ctrl+c" {
-		m.flushSession()
-		clearImages()
-		return m, tea.Quit
+		return m, m.quit()
 	}
 
 	// modal: confirm prompt
@@ -449,9 +554,7 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	cli := m.cli
 	switch msg.String() {
 	case "q":
-		m.flushSession()
-		clearImages()
-		return m, tea.Quit
+		return m, m.quit()
 	case "t":
 		m.thermalOn = true
 		return m, nil
@@ -495,7 +598,14 @@ func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "r":
 		// refresh everything on screen: the status poll defers if the console
-		// is busy, the list re-fetch is an idempotent read outside the gate
+		// is busy, the list re-fetch is an idempotent read outside the gate.
+		// Offline, the list is pointless and the poll's failure would sweep
+		// anyway — but r is also the explicit "look again" for a console that
+		// came back on a new address, so it re-arms the one-sweep latch.
+		if m.lastErr != nil { // known offline, not merely unpolled
+			m.swept = false
+			return m, tea.Batch(m.refreshNow(), m.sweepLAN())
+		}
 		return m, tea.Batch(m.refreshNow(), m.fetchGames())
 	case "g":
 		return m, m.rescan()

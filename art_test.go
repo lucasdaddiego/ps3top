@@ -1,14 +1,18 @@
 package main
 
 import (
+	"fmt"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/colorprofile"
 )
 
-// captureStdout runs fn with os.Stdout redirected and returns what it wrote.
-// The escape writers go straight to the fd rather than through bubbletea, which
-// is the whole point of them — so this is the only way to see their output.
+// captureStdout runs fn with os.Stdout redirected and returns what it wrote —
+// for the plain-text entry points (--once, --stats) that print directly.
 func captureStdout(t *testing.T, fn func()) string {
 	t.Helper()
 	r, w, err := os.Pipe()
@@ -108,23 +112,100 @@ func TestPlacementRow(t *testing.T) {
 	}
 }
 
-// A cover download finishing after quit must not re-add an image to the
-// terminal's store: it would sit there until the window closed.
-func TestRawWriteIsGatedAfterQuit(t *testing.T) {
-	defer quitting.Store(false) // global, and the suite is shuffled
-	quitting.Store(false)
+// cmdsIn unwraps a message that is itself a list of commands — tea.BatchMsg,
+// or the unexported sequence message behind tea.Sequence — into its parts.
+// Anything else is a leaf and returns nil. Reflection because the sequence
+// type isn't exported; both are plain []tea.Cmd underneath.
+func cmdsIn(msg tea.Msg) []tea.Cmd {
+	v := reflect.ValueOf(msg)
+	if !v.IsValid() || v.Kind() != reflect.Slice || v.Type().Elem() != reflect.TypeOf(tea.Cmd(nil)) {
+		return nil
+	}
+	out := make([]tea.Cmd, v.Len())
+	for i := range out {
+		out[i] = v.Index(i).Interface().(tea.Cmd)
+	}
+	return out
+}
 
-	if got := captureStdout(t, func() { rawWrite("hello") }); got != "hello" {
-		t.Errorf("rawWrite wrote %q", got)
+// leaves runs a command and returns every leaf message it produces, in order,
+// descending through batches and sequences without feeding anything back.
+func leaves(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
 	}
-	got := captureStdout(t, func() {
-		clearImages()
-		rawWrite("late cover")
-	})
-	if !strings.Contains(got, "\x1b_Ga=d,d=A,q=2\x1b\\") {
-		t.Errorf("clearImages didn't send the delete-all escape: %q", got)
+	msg := cmd()
+	if msg == nil {
+		return nil
 	}
-	if strings.Contains(got, "late cover") {
-		t.Error("a transmission after quit still reached the terminal")
+	if parts := cmdsIn(msg); parts != nil {
+		var out []tea.Msg
+		for _, c := range parts {
+			out = append(out, leaves(c)...)
+		}
+		return out
+	}
+	return []tea.Msg{msg}
+}
+
+// raw returns the raw escape strings among a command's leaves.
+func raw(cmd tea.Cmd) string {
+	var sb strings.Builder
+	for _, msg := range leaves(cmd) {
+		if r, ok := msg.(tea.RawMsg); ok {
+			sb.WriteString(fmt.Sprint(r.Msg))
+		}
+	}
+	return sb.String()
+}
+
+// placeholderModel is the smallest model that puts a placeholder row on screen
+// and quits — the vehicle for checking what the renderer actually emits.
+type placeholderModel struct{ row string }
+
+func (placeholderModel) Init() tea.Cmd                         { return tea.Quit }
+func (m placeholderModel) Update(tea.Msg) (tea.Model, tea.Cmd) { return m, nil }
+func (m placeholderModel) View() tea.View {
+	v := tea.NewView(m.row + "\nnext line")
+	v.AltScreen = true
+	return v
+}
+
+// The cover art depends on the renderer passing three things through a cell
+// untouched: the U+10EEEE placeholder, the two combining diacritics that name
+// the image row/column, and the 256-colour foreground that carries the image
+// id. bubbletea's cell renderer re-encodes every cell from its own buffer —
+// this pins that what comes out the other end is still a kitty placeholder.
+// Headless: the program is given a buffer for a terminal and quits on Init.
+func TestRendererPassesPlaceholderCellsThrough(t *testing.T) {
+	const id = 7
+	var out strings.Builder
+	p := tea.NewProgram(placeholderModel{placementRow(id, 3)},
+		tea.WithInput(nil),
+		tea.WithOutput(&out),
+		tea.WithoutSignals(),
+		tea.WithWindowSize(80, 24),
+		tea.WithEnvironment([]string{"TERM=xterm-ghostty"}),
+		tea.WithColorProfile(colorprofile.TrueColor),
+	)
+	if _, err := p.Run(); err != nil {
+		t.Fatal(err)
+	}
+	got := out.String()
+
+	cell := string(placeholder) + string(diacritics[3]) + string(diacritics[0])
+	if !strings.Contains(got, cell) {
+		t.Fatalf("first placeholder cell (U+10EEEE + row/col diacritics) not in the output:\n%q", got)
+	}
+	if n := strings.Count(got, string(placeholder)); n != artCols {
+		t.Errorf("%d placeholder cells reached the terminal, want %d", n, artCols)
+	}
+	// the image id rides in the foreground colour of those cells
+	if !strings.Contains(got, "38;5;7m") && !strings.Contains(got, ";38;5;7m") {
+		t.Errorf("image id not carried as a 256-colour foreground:\n%q", got)
+	}
+	// and the id's colour is set before the first placeholder, not after
+	if strings.Index(got, "38;5;7") > strings.Index(got, string(placeholder)) {
+		t.Error("foreground set after the placeholder cells it should colour")
 	}
 }

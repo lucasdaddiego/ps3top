@@ -62,8 +62,8 @@ func TestParseStatusInGame(t *testing.T) {
 	if s.WMVersion != "1.47.48q" {
 		t.Errorf("WMVersion = %q", s.WMVersion)
 	}
-	if s.Lifetime == "" {
-		t.Error("Lifetime empty")
+	if s.LifeDays == 0 {
+		t.Error("lifetime counters not parsed")
 	}
 	if s.GameVer != "01.15" {
 		t.Errorf("GameVer = %q", s.GameVer)
@@ -91,13 +91,13 @@ func TestParseGames(t *testing.T) {
 		if g.ID == "MOCK98137" {
 			storm = &games[i]
 		}
-		if g.IsPSX() {
+		if g.Console() == "PSX" {
 			psx++
 		}
 		if g.MountURL == "" || g.Title == "" {
 			t.Errorf("incomplete entry: %+v", g)
 		}
-		if !g.IsPSX() && g.ID == "" {
+		if !(g.Console() == "PSX") && g.ID == "" {
 			t.Errorf("PS3 game without title ID: %+v", g)
 		}
 		if strings.ContainsAny(g.Title, "\n\r") {
@@ -506,8 +506,8 @@ func TestRemoteTextIsStrippedOfControlSequences(t *testing.T) {
 		{"CSI colour", "Game\x1b[31mRED", "Game[31mRED"},
 		{"OSC 52 clipboard", "Game\x1b]52;c;cGFzcw==\x07", "Game]52;c;cGFzcw=="},
 		{"raw ESC", "\x1bGame", "Game"},
-		{"C1 eight-bit CSI", "Game31m", "Game31m"},
-		{"bidi override", "Game‮exe.gpj", "Gameexe.gpj"},
+		{"C1 eight-bit CSI", "Game\u009b31m", "Game31m"},
+		{"bidi override", "Game\u202eexe.gpj", "Gameexe.gpj"},
 		{"NUL and DEL", "Ga\x00me\x7f", "Game"},
 		{"newline folds to a space", "Line\nTwo", "Line Two"},
 		{"clean text untouched", "Sample Game™ 2 — 日本語", "Sample Game™ 2 — 日本語"},

@@ -10,8 +10,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	"github.com/sahilm/fuzzy"
 )
 
@@ -38,16 +38,28 @@ type (
 	// separately (reloadMsg) so webMAN has a beat to finish writing the XML.
 	rescanMsg struct{ err error }
 	reloadMsg struct{}
-	coverMsg  struct {
+	// coverTickMsg is the debounce behind a console cover fetch: it fires
+	// once the cursor has rested, and only the newest generation is honoured.
+	coverTickMsg struct{ gen int }
+	// coverMsg carries a loaded PNG; coverShownMsg follows once the bytes
+	// have gone to the terminal, and is what lets the panel reference them.
+	coverMsg struct {
 		icon string
 		id   int
+		png  []byte
+		err  error
+	}
+	coverShownMsg struct{ id int }
+	// discoverMsg is a background LAN sweep's answer, run when the cached
+	// address stops answering (DHCP moved the console, or it was off).
+	discoverMsg struct {
+		host string
 		err  error
 	}
 	// fanMsg carries the status page the fan endpoint returned, plus what the
 	// fan read before it — so the UI can report the move that actually
 	// happened rather than assume the step landed.
 	fanMsg struct {
-		cmd      string
 		prevPct  int
 		prevMax  int
 		prevMode string
@@ -77,6 +89,13 @@ type model struct {
 	alarm    int
 	artOn    bool
 	cacheDir string
+	// hostCache is the last-good-address file, set only when the host was
+	// auto-discovered: it's what licenses a background re-sweep when that
+	// address stops answering. A --host the user typed is never second-guessed.
+	hostCache string
+	scanning  bool   // a sweep is out; the header says so
+	scanNets  string // the subnets it's probing, for that message
+	swept     bool   // one sweep per offline stretch — 254 dials is not a retry loop
 
 	width, height int
 	listH         int
@@ -136,12 +155,12 @@ type model struct {
 	flashGen   int // invalidates stale clearFlashMsg ticks
 	alarming   bool
 
-	coverIDs    map[string]int
-	transmitted map[int]bool
-	coverBusy   map[string]bool
+	coverIDs    map[string]int  // icon path → kitty image id
+	transmitted map[int]bool    // ids the terminal holds
+	coverFailed map[string]bool // icons that failed this session; a list reload retries them
+	coverBusy   string          // icon path of the one load in flight ("" = idle)
+	coverGen    int             // invalidates stale coverTickMsg debounce ticks
 	nextID      int
-
-	flip bool // alternates per frame — see View
 }
 
 func newModel(cli *Client, host string, interval time.Duration, alarm int, artOn bool, cacheDir string, hist *history) *model {
@@ -155,10 +174,10 @@ func newModel(cli *Client, host string, interval time.Duration, alarm int, artOn
 		hist:        hist,
 		coverIDs:    map[string]int{},
 		transmitted: map[int]bool{},
-		coverBusy:   map[string]bool{},
+		coverFailed: map[string]bool{},
 	}
 	if m.hist == nil { // every read path dereferences it; an empty log is the no-op
-		m.hist = &history{stats: map[string]gameStat{}, firstHDD: unknown, lastHDD: unknown}
+		m.hist = &history{stats: map[string]gameStat{}}
 	}
 	pi := textinput.New()
 	pi.Placeholder = "message to the TV"

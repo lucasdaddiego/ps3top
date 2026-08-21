@@ -12,7 +12,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 const (
@@ -343,10 +343,7 @@ func (m *model) bigMetric(name string, v int, nameSt lipgloss.Style) string {
 func (m *model) plotCaption(w int) string {
 	left := dimSt.Render(fmt.Sprintf(" └ %s ago", fmtDur(int(m.interval.Seconds())*histLen)))
 	right := cpuSt.Render("── CPU") + "  " + rsxSt.Render("── RSX") + dimSt.Render("  now ┘")
-	pad := w - lipgloss.Width(left) - lipgloss.Width(right) - 1
-	if pad < 1 {
-		pad = 1
-	}
+	pad := max(1, w-lipgloss.Width(left)-lipgloss.Width(right)-1)
 	return left + strings.Repeat(" ", pad) + right
 }
 
@@ -459,9 +456,6 @@ func (m *model) fanRow(w int) []string {
 			break
 		}
 	}
-	pad := w - lipgloss.Width(left) - lipgloss.Width(right)
-	if pad < 1 {
-		pad = 1
-	}
+	pad := max(1, w-lipgloss.Width(left)-lipgloss.Width(right))
 	return []string{left + strings.Repeat(" ", pad) + right}
 }

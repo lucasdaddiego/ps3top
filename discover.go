@@ -5,7 +5,8 @@ package main
 // few hosts that answer, GET /cpursx.ps3 and require the webMAN banner in the
 // body (any other web server 404s or serves something else). The last good
 // host is cached, so later launches probe one address instead of 254 — and a
-// stale cache (DHCP moved the console) falls through to a fresh sweep.
+// stale cache (DHCP moved the console) falls through to a fresh sweep, run by
+// the TUI in the background once its first poll of the cached address fails.
 
 import (
 	"context"
@@ -35,39 +36,71 @@ var sweepPort = "80"
 // unguarded would sweep the developer's actual LAN, 254 dials per subnet.
 var localNets = localSubnets
 
-// discoverHost finds the console: cached last-good host first, then a sweep.
+// discoverHost finds the console before the TUI starts: the cached last-good
+// host, handed back without a request — the TUI's own first poll is the
+// verification, which is what lets a console that's off at launch get an
+// offline dashboard that recovers rather than a refusal to start — and a
+// sweep only when there is no cache to trust.
 func discoverHost(cachePath string) (string, error) {
-	if b, err := os.ReadFile(cachePath); err == nil {
-		// the cache is ours, but it's a file on disk — validate it like any
-		// other input rather than concatenating it into a URL on trust
-		if host, err := normalizeHost(string(b)); err == nil && isWebMAN(host) {
-			return host, nil
-		}
+	if host, ok := cachedHost(cachePath); ok {
+		return host, nil
 	}
+	host, err := findConsole(func(nets string) {
+		fmt.Fprintf(os.Stderr, "ps3top: scanning %s for webMAN…\n", nets)
+	})
+	if err != nil {
+		return "", err
+	}
+	rememberHost(cachePath, host)
+	return host, nil
+}
 
+// cachedHost reads the last-good address. The cache is ours, but it's a file
+// on disk — validated like any other input rather than concatenated into a
+// URL on trust.
+func cachedHost(cachePath string) (string, bool) {
+	b, err := os.ReadFile(cachePath)
+	if err != nil {
+		return "", false
+	}
+	host, err := normalizeHost(string(b))
+	return host, err == nil
+}
+
+// rememberHost writes the address back so the next launch probes one host
+// instead of 254. Best effort: a cache that can't be written costs a sweep.
+func rememberHost(cachePath, host string) {
+	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err == nil {
+		_ = os.WriteFile(cachePath, []byte(host+"\n"), 0o644)
+	}
+}
+
+// findConsole sweeps the LAN for a webMAN console. announce, if set, is told
+// which subnets are about to be probed — the sweep takes seconds, and a
+// caller with a screen should say so.
+func findConsole(announce func(nets string)) (string, error) {
 	subnets := localNets()
 	if len(subnets) == 0 {
 		return "", fmt.Errorf("no private IPv4 network found — pass --host")
 	}
-	fmt.Fprintf(os.Stderr, "ps3top: scanning %s for webMAN…\n", subnetNames(subnets))
+	if announce != nil {
+		announce(subnetNames(subnets))
+	}
 	host := sweep(subnets)
 	if host == "" {
 		return "", fmt.Errorf("no webMAN console on %s — is the PS3 on with HEN active? (--host skips discovery)",
 			subnetNames(subnets))
 	}
-
-	if err := os.MkdirAll(filepath.Dir(cachePath), 0o755); err == nil {
-		_ = os.WriteFile(cachePath, []byte(host+"\n"), 0o644)
-	}
 	return host, nil
 }
 
-// isWebMAN reports whether host serves webMAN's status page.
+// isWebMAN reports whether host serves webMAN's status page — Status already
+// insists on the banner, so any answer it accepts is a console.
 func isWebMAN(host string) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), sweepVerifyTimeout)
 	defer cancel()
-	body, err := NewClient(host).get(ctx, "/cpursx.ps3")
-	return err == nil && strings.Contains(string(body), "webMAN")
+	_, err := NewClient(host).Status(ctx)
+	return err == nil
 }
 
 type subnet struct {

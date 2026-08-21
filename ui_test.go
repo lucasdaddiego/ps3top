@@ -1,12 +1,15 @@
 package main
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
+
+var errTest = errors.New("dial tcp: connection refused")
 
 func liveModel(t *testing.T, width int) *model {
 	t.Helper()
@@ -71,6 +74,23 @@ func TestSparklinesNeverWidenTheHeader(t *testing.T) {
 				t.Errorf("width %d: sparklines widened header line %d from %d to %d\n%s", w, i, b, a, with[i])
 			}
 		}
+	}
+}
+
+// Before the first poll answers, the header is waiting — not "unreachable".
+// online starts false, so the waiting branch used to test for a state that
+// can't exist (a status-less model that's online) and every launch opened on
+// a red "console unreachable — retrying" until the first reply landed.
+func TestHeaderWaitsBeforeTheFirstPoll(t *testing.T) {
+	m := testModel(t, t.TempDir(), nil)
+	m.width, m.height, m.listH = 120, 30, 20
+	if h := m.header(); !strings.Contains(h, "waiting for first status") || strings.Contains(h, "unreachable") {
+		t.Errorf("fresh header:\n%s", h)
+	}
+	// a failed first poll is offline, and says so
+	m.Update(statusMsg{err: errTest})
+	if h := m.header(); !strings.Contains(h, "unreachable") {
+		t.Errorf("header after a failed poll:\n%s", h)
 	}
 }
 
@@ -240,11 +260,11 @@ func TestViewRendersInEveryState(t *testing.T) {
 	for name, setup := range states {
 		m := liveModel(t, 120)
 		setup(m)
-		out := m.View()
+		out := m.frame()
 		if out == "" {
 			t.Errorf("%s: empty frame", name)
 		}
-		for i, line := range strings.Split(strings.TrimSuffix(out, "\x1b[0m"), "\n") {
+		for i, line := range strings.Split(out, "\n") {
 			if got := lipgloss.Width(line); got > m.width {
 				t.Errorf("%s: line %d is %d cols, over the %d-col terminal\n%s", name, i, got, m.width, line)
 			}
@@ -457,7 +477,7 @@ func TestPollsDeferWhileTheConsoleIsBusy(t *testing.T) {
 
 	// the fan reply releases it, but only once the queue is empty
 	m.fanQueue = []string{fanUp}
-	mm, _ = m.Update(fanMsg{cmd: fanUp, st: Status{FanPct: 30, FanMode: "manual"}})
+	mm, _ = m.Update(fanMsg{st: Status{FanPct: 30, FanMode: "manual"}})
 	m = mm.(*model)
 	if !m.needStatus {
 		t.Error("deferred poll dropped while the queue was still draining")
@@ -466,7 +486,7 @@ func TestPollsDeferWhileTheConsoleIsBusy(t *testing.T) {
 		t.Fatal("queued command never dispatched")
 	}
 
-	mm, cmd := m.Update(fanMsg{cmd: fanUp, st: Status{FanPct: 31, FanMode: "manual"}})
+	mm, cmd := m.Update(fanMsg{st: Status{FanPct: 31, FanMode: "manual"}})
 	m = mm.(*model)
 	if m.needStatus {
 		t.Error("deferred poll never taken after the queue drained")

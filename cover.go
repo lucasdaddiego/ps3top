@@ -46,6 +46,14 @@ func checkPNG(b []byte) error {
 	return nil
 }
 
+// coverCached reports whether a cover is already on disk — the cheap check
+// that decides whether a selection can show its art at once or has to wait
+// out the debounce before asking the console.
+func coverCached(cacheDir, iconPath string) bool {
+	fi, err := os.Stat(filepath.Join(cacheDir, coverKey(iconPath)))
+	return err == nil && fi.Size() > 0
+}
+
 // loadCover returns the PNG for a webMAN icon path, hitting the PS3 only on
 // cache miss.
 func loadCover(cli *Client, cacheDir, iconPath string) ([]byte, error) {

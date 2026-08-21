@@ -17,7 +17,7 @@ STAMP   := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DA
 RELEASE := -trimpath -ldflags "-s -w $(STAMP)"
 
 .DEFAULT_GOAL := help
-.PHONY: help build run test install clean
+.PHONY: help build run test lint tidy install clean
 
 help: ## List the targets (the default goal)
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-8s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -31,6 +31,15 @@ run: ## Launch the TUI (auto-discovers the console)
 test: ## Vet and run the test suite
 	go vet ./...
 	go test ./...
+
+lint: ## Vet, gofmt check, and staticcheck when it's installed
+	go vet ./...
+	@test -z "$$(gofmt -l .)" || { gofmt -l .; echo "gofmt: files need formatting"; exit 1; }
+	@command -v staticcheck >/dev/null && staticcheck ./... || echo "staticcheck not installed (go install honnef.co/go/tools/cmd/staticcheck@latest)"
+
+tidy: ## Update dependencies to their latest minor/patch and tidy go.mod
+	go get -u ./...
+	go mod tidy
 
 install: ## Install a stripped release binary into ~/.bin
 	@mkdir -p $(INSTALL_DIR)

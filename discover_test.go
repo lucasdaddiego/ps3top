@@ -101,21 +101,23 @@ func TestSweepFindsTheConsole(t *testing.T) {
 	}
 }
 
-func TestDiscoverHostUsesTheCache(t *testing.T) {
-	host := loopbackWebMAN(t, "webMAN 1.47.48q MOD")
-	dir := t.TempDir()
-	cache := filepath.Join(dir, "host")
+// A cached address is handed back without a request, even one nothing is
+// listening on: the TUI's first poll is the verification, and a stale cache
+// is re-swept from inside the dashboard. That's what lets ps3top start before
+// the console is on. The junk guard still applies — a cache that isn't an
+// address is not "a host to try", it's a sweep.
+func TestDiscoverHostTrustsTheCache(t *testing.T) {
+	loopbackOnly(t)
+	defer func(p string) { sweepPort = p }(sweepPort)
+	sweepPort = "1" // nothing listens: any sweep finds nothing, fast
 
-	// a cached address that still answers skips the sweep entirely
-	if err := os.WriteFile(cache, []byte(host+"\n"), 0o644); err != nil {
+	cache := filepath.Join(t.TempDir(), "host")
+	if err := os.WriteFile(cache, []byte("127.0.0.1:1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	got, err := discoverHost(cache)
-	if err != nil {
-		t.Fatalf("discoverHost: %v", err)
-	}
-	if got != host {
-		t.Errorf("discoverHost = %q, want the cached %q", got, host)
+	if err != nil || got != "127.0.0.1:1" {
+		t.Errorf("discoverHost = %q, %v; want the cached address back", got, err)
 	}
 }
 

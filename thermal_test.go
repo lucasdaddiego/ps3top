@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 func TestBigTextGeometry(t *testing.T) {
@@ -225,7 +225,7 @@ func TestThermalViewWithNoHistory(t *testing.T) {
 	if !strings.Contains(out, "collecting samples") {
 		t.Errorf("empty history should say so:\n%s", out)
 	}
-	if lipgloss.Width(m.View()) == 0 {
+	if lipgloss.Width(m.frame()) == 0 {
 		t.Error("empty frame")
 	}
 }
@@ -268,14 +268,33 @@ func TestThermalFooterNamesWhatTheKeysDo(t *testing.T) {
 	}
 }
 
-func key(s string) tea.KeyMsg {
-	switch s {
-	case "esc":
-		return tea.KeyMsg{Type: tea.KeyEscape}
-	case "enter":
-		return tea.KeyMsg{Type: tea.KeyEnter}
+// specialKeys maps the names handleKey matches on to the key codes the
+// terminal sends — a key press built from the name alone would carry it as
+// text, and a Text of "up" is not the up arrow.
+var specialKeys = map[string]tea.KeyPressMsg{
+	"esc":       {Code: tea.KeyEscape},
+	"enter":     {Code: tea.KeyEnter},
+	"tab":       {Code: tea.KeyTab},
+	"shift+tab": {Code: tea.KeyTab, Mod: tea.ModShift},
+	"up":        {Code: tea.KeyUp},
+	"down":      {Code: tea.KeyDown},
+	"left":      {Code: tea.KeyLeft},
+	"right":     {Code: tea.KeyRight},
+	"pgup":      {Code: tea.KeyPgUp},
+	"pgdown":    {Code: tea.KeyPgDown},
+	"home":      {Code: tea.KeyHome},
+	"end":       {Code: tea.KeyEnd},
+	"ctrl+c":    {Code: 'c', Mod: tea.ModCtrl},
+	"ctrl+u":    {Code: 'u', Mod: tea.ModCtrl},
+	"ctrl+d":    {Code: 'd', Mod: tea.ModCtrl},
+}
+
+func key(s string) tea.KeyPressMsg {
+	if k, ok := specialKeys[s]; ok {
+		return k
 	}
-	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+	r := []rune(s)
+	return tea.KeyPressMsg{Code: r[0], Text: s}
 }
 
 func TestThermalKeyBlock(t *testing.T) {
@@ -483,7 +502,7 @@ func TestFanPressesSerializeAndDrain(t *testing.T) {
 
 	// each reply dispatches exactly one more
 	for want := 3; want >= 0; want-- {
-		mm, cmd := m.Update(fanMsg{cmd: fanUp, prevPct: 26, st: Status{FanPct: 27, FanMode: "manual"}})
+		mm, cmd := m.Update(fanMsg{prevPct: 26, st: Status{FanPct: 27, FanMode: "manual"}})
 		m = mm.(*model)
 		if len(m.fanQueue) != want {
 			t.Fatalf("queue = %v after a reply, want %d", m.fanQueue, want)
@@ -495,7 +514,7 @@ func TestFanPressesSerializeAndDrain(t *testing.T) {
 			t.Fatal("reply produced no follow-up")
 		}
 	}
-	m.Update(fanMsg{cmd: fanUp, prevPct: 27, st: Status{FanPct: 28, FanMode: "manual"}})
+	m.Update(fanMsg{prevPct: 27, st: Status{FanPct: 28, FanMode: "manual"}})
 	if m.fanBusy || len(m.fanQueue) != 0 {
 		t.Errorf("drained to busy=%v queue=%v, want idle", m.fanBusy, m.fanQueue)
 	}
@@ -510,7 +529,7 @@ func TestFanPressesSerializeAndDrain(t *testing.T) {
 	}
 
 	// and a failure clears the backlog instead of hammering a sick console
-	mm, _ := m.Update(fanMsg{cmd: fanUp, err: context_deadline{}})
+	mm, _ := m.Update(fanMsg{err: context_deadline{}})
 	m = mm.(*model)
 	if len(m.fanQueue) != 0 || m.fanBusy {
 		t.Errorf("after an error: queue=%v busy=%v, want cleared", m.fanQueue, m.fanBusy)
@@ -724,36 +743,36 @@ func TestFanReport(t *testing.T) {
 		want string
 	}{
 		{"stepped up in manual",
-			fanMsg{cmd: fanUp, prevPct: 26, prevMax: unknown, prevMode: "manual",
+			fanMsg{prevPct: 26, prevMax: unknown, prevMode: "manual",
 				st: Status{FanPct: 31, MaxTemp: unknown, FanMode: "manual"}},
 			"fan 26% → 31%"},
 		{"stepped down in manual",
-			fanMsg{cmd: fanDown, prevPct: 31, prevMax: unknown, prevMode: "manual",
+			fanMsg{prevPct: 31, prevMax: unknown, prevMode: "manual",
 				st: Status{FanPct: 26, MaxTemp: unknown, FanMode: "manual"}},
 			"fan 31% → 26%"},
 		// the case that used to report "fan unchanged at 31%" while the target moved
 		{"stepped the target in dynamic",
-			fanMsg{cmd: fanUp, prevPct: 31, prevMax: 86, prevMode: "dynamic",
+			fanMsg{prevPct: 31, prevMax: 86, prevMode: "dynamic",
 				st: Status{FanPct: 31, MaxTemp: 98, FanMode: "dynamic"}},
 			"target 86° → 98°"},
 		{"mode cycled",
-			fanMsg{cmd: fanMode, prevPct: 26, prevMode: "SYSCON",
+			fanMsg{prevPct: 26, prevMode: "SYSCON",
 				st: Status{FanPct: 26, FanMode: "dynamic", MaxTemp: 86}},
 			"mode syscon → dynamic"},
 		{"mode and speed both moved",
-			fanMsg{cmd: fanMode, prevPct: 26, prevMode: "dynamic",
+			fanMsg{prevPct: 26, prevMode: "dynamic",
 				st: Status{FanPct: 42, FanMode: "manual"}},
 			"mode dynamic → manual · fan 26% → 42%"},
 		{"mode unknown before",
-			fanMsg{cmd: fanMode, prevPct: 26, prevMode: "",
+			fanMsg{prevPct: 26, prevMode: "",
 				st: Status{FanPct: 26, FanMode: "manual"}},
 			"mode manual"},
 		{"genuinely refused to move",
-			fanMsg{cmd: fanUp, prevPct: 100, prevMax: unknown, prevMode: "manual",
+			fanMsg{prevPct: 100, prevMax: unknown, prevMode: "manual",
 				st: Status{FanPct: 100, MaxTemp: unknown, FanMode: "manual"}},
 			"nothing changed (fan 100%, manual)"},
 		{"no reading",
-			fanMsg{cmd: fanUp, prevPct: 26, st: Status{FanPct: unknown}},
+			fanMsg{prevPct: 26, st: Status{FanPct: unknown}},
 			"fan: no reading"},
 	}
 	for _, c := range cases {

@@ -5,7 +5,7 @@
 // The binary is one flat package on purpose — the tests live in-package and
 // exercise internals directly. The map:
 //
-//	main.go     CLI flags, --once and --stats entry points
+//	main.go     flags, discovery hand-off, and the program start
 //	model.go    the bubbletea model, its messages, and list mechanics
 //	update.go   Init/Update/handleKey and the network commands + action gate
 //	view.go     every frame of the main screen, styles, shared formatters
@@ -14,7 +14,7 @@
 //	thermal.go  the full-body thermal screen (t) that fan.go's queue drives
 //	webman.go   HTTP client + parsers for webMAN's pages
 //	discover.go LAN sweep that finds the console when --host is absent
-//	history.go  the NDJSON play log and --stats
+//	history.go  the NDJSON play log behind the play totals
 //	spark.go    fixed-size metric rings and the sparkline renderer
 //	art.go      kitty-graphics cover plumbing (transmit/placeholder/cleanup)
 //	cover.go    cover fetch + on-disk PNG cache

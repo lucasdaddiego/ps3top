@@ -27,20 +27,33 @@ var blocks = []rune("▁▂▃▄▅▆▇█")
 type series struct {
 	v [histLen]int
 	n int // total pushes ever; the ring holds the last min(n, histLen)
+
+	// win is the window materialized oldest-first, rebuilt lazily after a
+	// push. A frame reads each ring several times (bare and sparked metric
+	// lines, the trend, the thermal plot), and the ring only changes once a
+	// poll — so the copy is made once per poll, not once per read.
+	win   []int
+	stale bool
 }
 
 func (s *series) push(v int) {
 	s.v[s.n%histLen] = v
 	s.n++
+	s.stale = true
 }
 
-// samples returns the window oldest-first.
+// samples returns the window oldest-first. Shared, not copied: readers only
+// read it, and it's replaced (never edited) on the next push.
 func (s *series) samples() []int {
+	if !s.stale {
+		return s.win
+	}
 	n := min(s.n, histLen)
 	out := make([]int, 0, n)
 	for i := s.n - n; i < s.n; i++ {
 		out = append(out, s.v[i%histLen])
 	}
+	s.win, s.stale = out, false
 	return out
 }
 

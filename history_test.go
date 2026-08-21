@@ -2,8 +2,10 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,6 +25,23 @@ func testModel(t *testing.T, dir string, h *history) *model {
 		h = mustLoad(t, dir)
 	}
 	return newModel(nil, "test", time.Second, 80, false, dir, h)
+}
+
+// lastRecord reads the newest line of the log — the peaks a session closed
+// with are written there and shown once, in the exit flash, so the record is
+// the only place to check them.
+func lastRecord(t *testing.T, dir string) sessionRec {
+	t.Helper()
+	b, err := os.ReadFile(filepath.Join(dir, "history.ndjson"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	var r sessionRec
+	if err := json.Unmarshal([]byte(lines[len(lines)-1]), &r); err != nil {
+		t.Fatal(err)
+	}
+	return r
 }
 
 // The session length is webMAN's PlayTime, not a clock ps3top starts. That is
@@ -52,8 +71,8 @@ func TestSessionLengthComesFromPlayTime(t *testing.T) {
 	if s.Sessions != 1 {
 		t.Errorf("Sessions = %d, want 1", s.Sessions)
 	}
-	if s.PeakCPU != 75 {
-		t.Errorf("PeakCPU = %d, want 75", s.PeakCPU)
+	if r := lastRecord(t, dir); r.PeakCPU != 75 || r.PeakRSX != 72 {
+		t.Errorf("peaks = %d°/%d°, want 75°/72°", r.PeakCPU, r.PeakRSX)
 	}
 	if s.Title != "Sample Game™ 2" {
 		t.Errorf("Title = %q", s.Title)
@@ -107,7 +126,7 @@ func TestPeaksIgnoreUnknownTemps(t *testing.T) {
 	m.trackSession(Status{InGame: true, GameID: "MOCK1", GameTitle: "Mock", PlaySecs: 120, CPUTemp: unknown, RSXTemp: unknown})
 	m.trackSession(Status{InGame: false})
 
-	if got := mustLoad(t, dir).stats["MOCK1"].PeakCPU; got != 68 {
+	if got := lastRecord(t, dir).PeakCPU; got != 68 {
 		t.Errorf("PeakCPU = %d, want 68 — unknown must not overwrite a real peak", got)
 	}
 }
@@ -134,7 +153,7 @@ func TestHistoryRoundTripAndJunkTolerance(t *testing.T) {
 
 	for i := 0; i < 3; i++ {
 		err := h.add(sessionRec{ID: "MOCK1", Title: "Mock", End: now.Add(time.Duration(i) * time.Hour),
-			Secs: 600, PeakCPU: 60 + i, HDDFreeGB: float64(200 - i)})
+			Secs: 600, PeakCPU: 60 + i})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -154,12 +173,6 @@ func TestHistoryRoundTripAndJunkTolerance(t *testing.T) {
 	}
 	if s.Secs != 1800 || s.Sessions != 3 {
 		t.Errorf("aggregate = %ds/%d sessions, want 1800/3", s.Secs, s.Sessions)
-	}
-	if s.PeakCPU != 62 {
-		t.Errorf("PeakCPU = %d, want 62 (highest across sessions)", s.PeakCPU)
-	}
-	if got.firstHDD != 200 || got.lastHDD != 198 {
-		t.Errorf("HDD drift = %v → %v, want 200 → 198", got.firstHDD, got.lastHDD)
 	}
 	if len(got.stats) != 1 {
 		t.Errorf("junk line produced a phantom game: %v", got.stats)
@@ -443,9 +456,8 @@ func TestFailedAppendKeepsMemoryAndSessionIntact(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := &history{
-		path:     filepath.Join(dir, "blocked", "sub", "history.ndjson"),
-		stats:    map[string]gameStat{},
-		firstHDD: unknown, lastHDD: unknown,
+		path:  filepath.Join(dir, "blocked", "sub", "history.ndjson"),
+		stats: map[string]gameStat{},
 	}
 	m := testModel(t, dir, h)
 	m.trackSession(Status{InGame: true, GameID: "MOCK1", GameTitle: "Game", PlaySecs: 3600})

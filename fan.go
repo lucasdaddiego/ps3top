@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // fanQueueMax bounds the queue so a leaned-on key can't build a backlog of
@@ -92,7 +92,7 @@ func (m *model) drainFan() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 		defer cancel()
 		st, err := cli.Fan(ctx, cmd)
-		return fanMsg{cmd, prevPct, prevMax, prevMode, st, err}
+		return fanMsg{prevPct, prevMax, prevMode, st, err}
 	}
 }
 

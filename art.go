@@ -5,14 +5,17 @@ package main
 // q=2 so the terminal stays quiet), bound to a virtual placement, and then
 // referenced from the View as placeholder cells — which survive bubbletea's
 // cell-based redraws, unlike direct placements.
+//
+// The escape sequences themselves go out through tea.Raw, which bubbletea
+// flushes from the same ticker as the frame, ahead of it — so a transmission
+// can't interleave with a repaint, and a frame that references an image is
+// never written before the image is.
 
 import (
 	"encoding/base64"
 	"fmt"
 	"os"
 	"strings"
-	"sync"
-	"sync/atomic"
 )
 
 const (
@@ -38,26 +41,6 @@ func artSupported() bool {
 	prog := os.Getenv("TERM_PROGRAM")
 	return strings.Contains(term, "kitty") || strings.Contains(term, "ghostty") ||
 		prog == "ghostty" || prog == "kitty"
-}
-
-// rawWrite serializes out-of-band escape writes (image transmissions, bell)
-// against each other. A frame race with bubbletea's renderer is theoretically
-// possible but transmissions are rare (once per cover) and self-heal on the
-// next repaint.
-var (
-	outMu    sync.Mutex
-	quitting atomic.Bool
-)
-
-func rawWrite(s string) {
-	// a cover download finishing after quit must not re-add an image to the
-	// terminal's store post-cleanup (it would leak there until window close)
-	if quitting.Load() {
-		return
-	}
-	outMu.Lock()
-	defer outMu.Unlock()
-	os.Stdout.WriteString(s)
 }
 
 // transmitEscapes encodes a PNG as an id-tagged kitty image plus a virtual
@@ -99,12 +82,6 @@ func placementRow(id, row int) string {
 	return sb.String()
 }
 
-// clearImages politely frees all transmitted images on exit. It flips the
-// quitting gate first, then waits on the mutex — so an in-flight transmission
-// either finished before the delete-all (and is cleaned by it) or is dropped.
-func clearImages() {
-	quitting.Store(true)
-	outMu.Lock()
-	defer outMu.Unlock()
-	os.Stdout.WriteString("\x1b_Ga=d,d=A,q=2\x1b\\")
-}
+// deleteAllImages frees every transmitted image on exit, so the terminal's
+// store doesn't keep ~225KB per browsed cover until the window closes.
+const deleteAllImages = "\x1b_Ga=d,d=A,q=2\x1b\\"

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 // exec runs a tea.Cmd and hands its message back through Update, which is what
@@ -26,8 +26,8 @@ func exec(t *testing.T, m *model, cmd tea.Cmd) *model {
 	if msg == nil {
 		return m
 	}
-	if batch, ok := msg.(tea.BatchMsg); ok {
-		for _, c := range batch {
+	if parts := cmdsIn(msg); parts != nil { // a batch or a sequence
+		for _, c := range parts {
 			m = exec(t, m, c)
 		}
 		return m
@@ -63,31 +63,173 @@ func liveServer(t *testing.T) *Client {
 	return NewClient(strings.TrimPrefix(srv.URL, "http://"))
 }
 
-// Init is the startup batch: first status, first game list, and the poll timer.
-// Everything the TUI knows arrives through it.
-func TestInitFetchesStatusAndGames(t *testing.T) {
+// msgsOf executes a command and returns every message it produces, flattening
+// batches, without feeding any of them back — for asserting what a transition
+// *scheduled* rather than where it ended up.
+func msgsOf(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	if batch, ok := msg.(tea.BatchMsg); ok {
+		var out []tea.Msg
+		for _, c := range batch {
+			out = append(out, msgsOf(c)...)
+		}
+		return out
+	}
+	if msg == nil {
+		return nil
+	}
+	return []tea.Msg{msg}
+}
+
+// Init is the status poll and the poll timer, nothing else: the game list
+// follows the first good status rather than riding alongside it, so launch is
+// one connection at a time and a host that isn't webMAN is never asked for a
+// list. This pins both halves — Init alone establishes a status and opens the
+// session, and it's the transition to online that fetches the games.
+func TestInitFetchesStatusThenGamesOnTheWayOnline(t *testing.T) {
 	dir := t.TempDir()
 	m := testModel(t, dir, nil)
 	m.cli = liveServer(t)
 	m.width, m.height, m.listH = 120, 30, 20
 
-	m = exec(t, m, m.Init())
-
+	var first statusMsg
+	for _, msg := range msgsOf(m.Init()) {
+		switch msg := msg.(type) {
+		case gamesMsg:
+			t.Fatal("Init fetched the game list alongside the first status")
+		case statusMsg:
+			first = msg
+		}
+	}
+	mm, _ := m.Update(first)
+	m = mm.(*model)
 	if !m.haveStatus || !m.online {
 		t.Fatal("Init didn't establish a status")
 	}
 	if m.st.CPUTemp != 58 {
 		t.Errorf("CPUTemp = %d, want 58", m.st.CPUTemp)
 	}
+	// a game was running, so the poll opened a session
+	if !m.sesOn || m.sesSecs != 5025 {
+		t.Errorf("session = %v/%ds, want an open session at 5025s", m.sesOn, m.sesSecs)
+	}
+
+	// the first good status is what schedules the list...
+	m.online = false
+	_, cmd := m.Update(statusMsg{st: m.st})
+	var got gamesMsg
+	found := false
+	for _, msg := range msgsOf(cmd) {
+		if g, ok := msg.(gamesMsg); ok {
+			got, found = g, true
+		}
+	}
+	if !found {
+		t.Fatal("coming online didn't fetch the game list")
+	}
+	mm, _ = m.Update(got)
+	m = mm.(*model)
 	if len(m.games) != 22 {
-		t.Errorf("Init loaded %d games, want 22", len(m.games))
+		t.Errorf("loaded %d games, want 22", len(m.games))
 	}
 	if len(m.consoles) != 2 {
 		t.Errorf("consoles = %v, want PSX and PS3", m.consoles)
 	}
-	// a game was running, so the poll opened a session
-	if !m.sesOn || m.sesSecs != 5025 {
-		t.Errorf("session = %v/%ds, want an open session at 5025s", m.sesOn, m.sesSecs)
+
+	// ...and a status while already online doesn't re-fetch it every 15s
+	_, cmd = m.Update(statusMsg{st: m.st})
+	for _, msg := range msgsOf(cmd) {
+		if _, ok := msg.(gamesMsg); ok {
+			t.Error("a routine poll re-fetched the game list")
+		}
+	}
+}
+
+// A console that's off at launch used to be fatal (discovery refused to start)
+// and, once online, listless (the one games fetch had failed and nothing
+// retried it). Now an auto-discovered address that doesn't answer gets one
+// background sweep per outage, the dashboard stays up, and recovery loads the
+// list. A --host the user typed is never second-guessed by a sweep.
+func TestOfflineCachedHostSweepsOncePerOutage(t *testing.T) {
+	loopbackOnly(t)
+	defer func(p string) { sweepPort = p }(sweepPort)
+	sweepPort = "1" // the sweep finds nothing, fast
+
+	m := liveModel(t, 120)
+	m.cli = NewClient("127.0.0.1:1")
+	m.hostCache = filepath.Join(t.TempDir(), "host")
+
+	_, cmd := m.Update(statusMsg{err: errors.New("dial: refused")})
+	if cmd == nil || !m.scanning {
+		t.Fatal("a dead auto-discovered address didn't start a sweep")
+	}
+	if m.scanNets == "" {
+		t.Error("the header has no subnets to name while scanning")
+	}
+	if !strings.Contains(m.header(), "scanning") {
+		t.Error("header doesn't say a sweep is running")
+	}
+	// the sweep comes back empty: stay on the cached address, keep polling
+	m = exec(t, m, cmd)
+	if m.scanning {
+		t.Error("still scanning after the sweep answered")
+	}
+	if m.host != "test" {
+		t.Errorf("an empty sweep changed the host to %q", m.host)
+	}
+	// a second failure in the same outage is NOT another 254 dials
+	if _, cmd := m.Update(statusMsg{err: errors.New("still dead")}); cmd != nil {
+		t.Error("every failed poll swept the LAN again")
+	}
+	// r is the explicit "look again", so it re-arms the latch
+	if _, cmd := m.handleKey(key("r")); cmd == nil || !m.scanning {
+		t.Error("r while offline didn't re-sweep")
+	}
+	m.scanning = false // as the sweep's reply would leave it
+
+	// recovery clears the latch: the NEXT outage sweeps once more
+	mm, _ := m.Update(statusMsg{st: m.st})
+	m = mm.(*model)
+	if m.swept {
+		t.Error("coming online didn't re-arm the one-sweep latch")
+	}
+
+	// a typed --host (no cache path) never sweeps
+	m.hostCache = ""
+	if _, cmd := m.Update(statusMsg{err: errors.New("dial: refused")}); cmd != nil {
+		t.Error("a --host address was second-guessed by a sweep")
+	}
+}
+
+// A sweep that finds the console somewhere else switches the client, writes
+// the cache back, and polls the new address straight away.
+func TestSweepAdoptsTheNewAddress(t *testing.T) {
+	m := liveModel(t, 120)
+	m.online = false
+	m.hostCache = filepath.Join(t.TempDir(), "sub", "host")
+	host := strings.TrimPrefix(liveServer(t).base, "http://")
+
+	mm, cmd := m.Update(discoverMsg{host: host})
+	m = mm.(*model)
+	if m.host != host || m.cli.base != "http://"+host {
+		t.Errorf("host = %q / client %q, want %q", m.host, m.cli.base, host)
+	}
+	if b, err := os.ReadFile(m.hostCache); err != nil || strings.TrimSpace(string(b)) != host {
+		t.Errorf("new address not cached: %q, %v", b, err)
+	}
+	if !strings.Contains(m.flash, host) {
+		t.Errorf("flash = %q, want the new address named", m.flash)
+	}
+	if cmd == nil || !m.inFlight {
+		t.Fatal("the new address wasn't polled immediately")
+	}
+	// and that poll, against the new client, answers
+	m = exec(t, m, m.fetchStatus())
+	if !m.online {
+		t.Error("the adopted address doesn't answer")
 	}
 }
 
@@ -205,33 +347,47 @@ func TestCoverLifecycle(t *testing.T) {
 		t.Errorf("no placeholder while the cover loads:\n%s", panel)
 	}
 
-	defer quitting.Store(false)
-	quitting.Store(false)
-	// the games load already started a fetch for the selected row, and exec
-	// drops the follow-up command — reset so this drives the lifecycle itself
-	m.coverIDs, m.transmitted, m.coverBusy, m.nextID = map[string]int{}, map[int]bool{}, map[string]bool{}, 0
-
-	var out string
-	cmd := m.ensureCover()
-	if cmd == nil {
-		t.Fatal("selecting a game didn't fetch its cover")
+	// an uncached cover is a console request, so it waits out the debounce:
+	// ensureCover schedules a tick rather than fetching on the spot
+	if cmd := m.ensureCover(); cmd == nil {
+		t.Fatal("selecting a game with no cached cover scheduled nothing")
+	} else if m.coverBusy != "" {
+		t.Error("an uncached cover was fetched before the cursor settled")
 	}
-	if !m.coverBusy[g.IconPath] {
-		t.Error("in-flight cover not marked busy")
+	gen := m.coverGen
+
+	// the tick that lands is the one that fetches
+	mm, cmd := m.Update(coverTickMsg{gen})
+	m = mm.(*model)
+	if cmd == nil {
+		t.Fatal("the settle tick didn't start the load")
+	}
+	if m.coverBusy != g.IconPath {
+		t.Errorf("in-flight cover = %q, want %q", m.coverBusy, g.IconPath)
 	}
 	// a second request while the first is in flight is deduplicated
 	if again := m.ensureCover(); again != nil {
 		t.Error("a duplicate cover fetch went out")
 	}
-	out = captureStdout(t, func() { m = exec(t, m, cmd) })
+	// the loaded PNG comes back as a message; what Update returns for it is
+	// the transmission followed by the "shown" marker — the load stays busy
+	// until the marker lands, so the bytes are always ahead of the frame
+	// that references them
+	mm, seq := m.Update(cmd())
+	m = mm.(*model)
+	if m.coverBusy != g.IconPath {
+		t.Error("load released before the bytes reached the terminal")
+	}
+	out := raw(seq)
 	if !strings.Contains(out, "\x1b_Gf=100") {
 		t.Errorf("cover never transmitted to the terminal: %q", out)
 	}
+	m = exec(t, m, seq)
 	id := m.coverIDs[g.IconPath]
 	if !m.transmitted[id] {
 		t.Error("transmitted cover not recorded")
 	}
-	if m.coverBusy[g.IconPath] {
+	if m.coverBusy != "" {
 		t.Error("cover still marked busy after it arrived")
 	}
 	// now the panel references the image instead of the placeholder
@@ -243,14 +399,87 @@ func TestCoverLifecycle(t *testing.T) {
 		t.Error("a transmitted cover was fetched a second time")
 	}
 
-	// a failed download reports and clears the busy flag. A fresh cache dir
-	// too, or the entry just written would serve the request and succeed.
+	// the fetch wrote the cache, so a fresh model finds it on disk and shows it
+	// without waiting: no tick, the load starts on the spot
+	m.coverIDs, m.transmitted = map[string]int{}, map[int]bool{}
+	if cmd := m.ensureCover(); cmd == nil || m.coverBusy != g.IconPath {
+		t.Error("a cached cover waited out the debounce")
+	} else {
+		m = exec(t, m, cmd)
+		m.coverBusy = "" // the shown marker would clear it
+	}
+
+	// a failed download clears the busy flag and is remembered, so the row
+	// doesn't cost the console a request on every visit. A fresh cache dir,
+	// or the entry just written would serve the request and succeed.
 	m.cli = NewClient("127.0.0.1:1")
 	m.cacheDir = t.TempDir()
-	m.coverIDs, m.transmitted, m.coverBusy = map[string]int{}, map[int]bool{}, map[string]bool{}
-	m = exec(t, m, m.ensureCover())
-	if m.coverBusy[g.IconPath] {
+	m.coverIDs, m.transmitted = map[string]int{}, map[int]bool{}
+	m = exec(t, m, m.startCover(g.IconPath))
+	if m.coverBusy != "" {
 		t.Error("a failed cover stayed busy forever")
+	}
+	if !m.coverFailed[g.IconPath] {
+		t.Error("a failed cover wasn't remembered")
+	}
+	if m.ensureCover() != nil {
+		t.Error("a failed cover was retried on the next selection")
+	}
+	if panel := m.artPanel(); !strings.Contains(panel, "no cover") {
+		t.Errorf("panel doesn't say the cover is missing:\n%s", panel)
+	}
+	// a list reload is the moment to try again
+	mm, _ = m.Update(gamesMsg{games: m.games})
+	m = mm.(*model)
+	if m.coverFailed[g.IconPath] {
+		t.Error("a games reload didn't clear the failed-cover memory")
+	}
+}
+
+// Scrolling through uncached rows must fetch where the cursor stops, not
+// everywhere it went: every move bumps the debounce generation, so the ticks
+// of rows it left are dead on arrival, and a load already in flight re-checks
+// the selection when it lands instead of letting another one start beside it.
+func TestCoverFetchesWhereTheCursorStops(t *testing.T) {
+	m := liveModel(t, 120)
+	m.cli = liveServer(t)
+	m.artOn = true
+	m.games[0].IconPath = "/dev_hdd0/tmp/wmtmp/One.PNG"
+	m.games[1].IconPath = "/dev_hdd0/tmp/wmtmp/Two.PNG"
+
+	m.ensureCover() // row 1
+	stale := m.coverGen
+	m.moveCursor(1)
+	if m.ensureCover() == nil {
+		t.Fatal("moving to an uncached row scheduled nothing")
+	}
+	// the tick for the row the cursor left does nothing
+	if _, cmd := m.Update(coverTickMsg{stale}); cmd != nil || m.coverBusy != "" {
+		t.Error("a stale debounce tick fetched the row the cursor had left")
+	}
+	// the current one fetches the row it's on
+	mm, cmd := m.Update(coverTickMsg{m.coverGen})
+	m = mm.(*model)
+	if m.coverBusy != "/dev_hdd0/tmp/wmtmp/Two.PNG" {
+		t.Errorf("fetching %q, want the row the cursor stopped on", m.coverBusy)
+	}
+	// while it's out, moving back schedules a tick but that tick must not
+	// start a second console request beside the first
+	m.moveCursor(-1)
+	m.ensureCover()
+	if _, c := m.Update(coverTickMsg{m.coverGen}); c != nil {
+		t.Error("two cover loads in flight at once")
+	}
+	// when the first has been shown, the selection is re-checked and row 1
+	// follows
+	mm, seq := m.Update(cmd())
+	m = mm.(*model)
+	m = exec(t, m, seq)
+	if m.coverBusy != "" {
+		t.Error("shown marker didn't release the load")
+	}
+	if next := m.ensureCover(); next == nil {
+		t.Error("a landed cover didn't leave the next selection fetchable")
 	}
 }
 
@@ -288,11 +517,11 @@ func TestCoverIDsExhaust(t *testing.T) {
 	m.artOn = true
 	m.games[0].IconPath = "/dev_hdd0/tmp/wmtmp/SampleGame2.PNG"
 	m.nextID = 254 // the next allocation is 255, the last encodable one
-	if m.ensureCover() == nil {
+	if m.startCover(m.games[0].IconPath) == nil {
 		t.Fatal("id 255 should still be usable")
 	}
-	m.coverIDs, m.coverBusy = map[string]int{}, map[string]bool{}
-	if m.ensureCover() != nil {
+	m.coverIDs, m.coverBusy = map[string]int{}, ""
+	if m.startCover(m.games[0].IconPath) != nil {
 		t.Error("allocated an unencodable image id")
 	}
 	if m.artOn {
@@ -382,7 +611,7 @@ func TestFilterAndSortKeys(t *testing.T) {
 		t.Fatal("/ didn't open the filter")
 	}
 	for _, r := range "storm" {
-		m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m.handleKey(tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
 	if len(m.order) == 0 || len(m.order) >= all {
 		t.Errorf("filter matched %d of %d rows", len(m.order), all)
@@ -407,7 +636,7 @@ func TestFilterAndSortKeys(t *testing.T) {
 
 	// esc while typing abandons the filter outright
 	m.handleKey(key("/"))
-	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'z'}})
+	m.handleKey(key("z"))
 	m.handleKey(key("esc"))
 	if m.filterTyping || m.filterQ != "" {
 		t.Error("esc didn't abandon the filter")
@@ -451,7 +680,7 @@ func TestPopupModal(t *testing.T) {
 
 	m.handleKey(key("m"))
 	for _, r := range "hi" {
-		m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m.handleKey(tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
 	_, cmd := m.handleKey(key("enter"))
 	if cmd == nil || !m.actBusy {
@@ -484,20 +713,37 @@ func TestPowerKeysAlwaysConfirm(t *testing.T) {
 }
 
 func TestQuitFlushesAndCleansUp(t *testing.T) {
-	defer quitting.Store(false)
 	for _, k := range []string{"q", "ctrl+c"} {
-		quitting.Store(false)
 		dir := t.TempDir()
 		m := testModel(t, dir, nil)
 		m.trackSession(Status{InGame: true, GameID: "MOCK1", GameTitle: "Game", PlaySecs: 600})
 
-		var cmd tea.Cmd
-		captureStdout(t, func() { _, cmd = m.handleKey(key(k)) })
-		if cmd == nil {
-			t.Errorf("%q didn't quit", k)
+		// with no images in the terminal there's nothing to free: plain quit
+		_, cmd := m.handleKey(key(k))
+		msgs := leaves(cmd)
+		if len(msgs) != 1 {
+			t.Fatalf("%q produced %d messages, want just the quit", k, len(msgs))
+		}
+		if _, ok := msgs[0].(tea.QuitMsg); !ok {
+			t.Errorf("%q didn't quit: %T", k, msgs[0])
 		}
 		if s := mustLoad(t, dir).stats["MOCK1"]; s.Secs != 600 {
 			t.Errorf("%q didn't write the open session (got %ds)", k, s.Secs)
+		}
+
+		// with covers transmitted, the delete-all goes out first, then the
+		// quit — in that order, so the store is freed before the program ends
+		m.transmitted[3] = true
+		_, cmd = m.handleKey(key(k))
+		msgs = leaves(cmd)
+		if len(msgs) != 2 {
+			t.Fatalf("%q with images produced %d messages, want delete then quit", k, len(msgs))
+		}
+		if r, ok := msgs[0].(tea.RawMsg); !ok || r.Msg != deleteAllImages {
+			t.Errorf("%q didn't free the terminal's images first: %#v", k, msgs[0])
+		}
+		if _, ok := msgs[1].(tea.QuitMsg); !ok {
+			t.Errorf("%q didn't end with a quit: %T", k, msgs[1])
 		}
 	}
 }
@@ -676,44 +922,6 @@ func TestFanQueueLabel(t *testing.T) {
 		if got := fanQueueLabel(c.q); got != c.want {
 			t.Errorf("fanQueueLabel(%v) = %q, want %q", c.q, got, c.want)
 		}
-	}
-}
-
-// --- history output ---
-
-func TestRunStats(t *testing.T) {
-	dir := t.TempDir()
-	out := captureStdout(t, func() { runStats(dir) })
-	if !strings.Contains(out, "no play history yet") {
-		t.Errorf("empty history printed:\n%s", out)
-	}
-
-	h := mustLoad(t, dir)
-	now := time.Now()
-	recs := []sessionRec{
-		{ID: "MOCK1", Title: "Sample Game™ 2", Started: now.Add(-40 * time.Hour), End: now.Add(-38 * time.Hour), Secs: 7200, PeakCPU: 71, HDDFreeGB: 130.0},
-		{ID: "MOCK1", Title: "Sample Game™ 2", Started: now.Add(-5 * time.Hour), End: now.Add(-4 * time.Hour), Secs: 3600, PeakCPU: 68, HDDFreeGB: 125.5},
-		{ID: "MOCK2", Title: "Another", Started: now.Add(-2 * time.Hour), End: now.Add(-time.Hour), Secs: 3600, HDDFreeGB: 123.4},
-		// a very long title exercises the 40-column clamp
-		{ID: "MOCK3", Title: strings.Repeat("Long ", 20), Started: now.Add(-time.Hour), End: now, Secs: 60},
-	}
-	for _, r := range recs {
-		if err := h.add(r); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	out = captureStdout(t, func() { runStats(dir) })
-	for _, want := range []string{
-		"play history", "Sample Game™ 2", "3h00m", "2 sessions", "1 session",
-		"peak 71°", "since ", "HDD ", "since first record",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("stats output missing %q:\n%s", want, out)
-		}
-	}
-	if strings.Contains(out, "2 session\b") {
-		t.Error("plural not applied")
 	}
 }
 

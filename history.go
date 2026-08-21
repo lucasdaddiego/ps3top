@@ -26,35 +26,29 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
 	"time"
-
-	"github.com/charmbracelet/lipgloss"
 )
 
 // sessionRec is one line of history.ndjson. Append-only, one JSON object per
 // line, so a forward-incompatible future field can't corrupt older records and
 // an unparseable line is skipped rather than fatal.
 type sessionRec struct {
-	ID        string    `json:"id,omitempty"`
-	Title     string    `json:"title"`
-	Started   time.Time `json:"started,omitempty"` // session identity — see recStart
-	End       time.Time `json:"end"`
-	Secs      int       `json:"secs"`
-	PeakCPU   int       `json:"peak_cpu,omitempty"`
-	PeakRSX   int       `json:"peak_rsx,omitempty"`
-	HDDFreeGB float64   `json:"hdd_free_gb,omitempty"`
+	ID      string    `json:"id,omitempty"`
+	Title   string    `json:"title"`
+	Started time.Time `json:"started,omitempty"` // session identity — see recStart
+	End     time.Time `json:"end"`
+	Secs    int       `json:"secs"`
+	PeakCPU int       `json:"peak_cpu,omitempty"`
+	PeakRSX int       `json:"peak_rsx,omitempty"`
 }
 
-// gameStat carries Title/ID so --stats can name a game from the log alone,
-// with the console off and no mygames.xml in reach.
+// gameStat is one game's totals as the list and art panel show them.
 type gameStat struct {
 	Title    string
 	ID       string
 	Secs     int
 	Sessions int
 	Last     time.Time
-	PeakCPU  int
 
 	// the most recent record folded for this game, so the next one can be
 	// recognised as another reading of the same session rather than a new one
@@ -63,10 +57,8 @@ type gameStat struct {
 }
 
 type history struct {
-	path              string
-	stats             map[string]gameStat // keyed by statKey
-	first             time.Time           // oldest record seen
-	firstHDD, lastHDD float64
+	path  string
+	stats map[string]gameStat // keyed by statKey
 }
 
 // statKey identifies a game across sessions. Title IDs are the stable handle,
@@ -103,10 +95,8 @@ func dataDir() (string, error) {
 // callers can warn and carry on.
 func loadHistory(dir string) (*history, error) {
 	h := &history{
-		path:     filepath.Join(dir, "history.ndjson"),
-		stats:    map[string]gameStat{},
-		firstHDD: unknown,
-		lastHDD:  unknown,
+		path:  filepath.Join(dir, "history.ndjson"),
+		stats: map[string]gameStat{},
 	}
 	f, err := os.Open(h.path)
 	if err != nil {
@@ -184,20 +174,7 @@ func (h *history) fold(r sessionRec) {
 	if r.End.After(s.Last) {
 		s.Last = r.End
 	}
-	if r.PeakCPU > s.PeakCPU {
-		s.PeakCPU = r.PeakCPU
-	}
 	h.stats[k] = s
-
-	if !r.End.IsZero() && (h.first.IsZero() || r.End.Before(h.first)) {
-		h.first = r.End
-	}
-	if r.HDDFreeGB > 0 {
-		if h.firstHDD == unknown {
-			h.firstHDD = r.HDDFreeGB
-		}
-		h.lastHDD = r.HDDFreeGB
-	}
 }
 
 func (h *history) stat(g Game) (gameStat, bool) {
@@ -277,67 +254,6 @@ func fmtAgo(t time.Time) string {
 		return fmt.Sprintf("%dh ago", int(d.Hours()))
 	}
 	return fmt.Sprintf("%dd ago", int(d.Hours()/24))
-}
-
-// --- ps3top --stats ---
-
-func runStats(dir string) {
-	h, err := loadHistory(dir)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "ps3top: history:", err)
-	}
-	if len(h.stats) == 0 {
-		fmt.Println("ps3top — no play history yet")
-		fmt.Println("(recorded at", filepath.Join(dir, "history.ndjson")+")")
-		return
-	}
-
-	rows := make([]gameStat, 0, len(h.stats))
-	total, sessions := 0, 0
-	for _, s := range h.stats {
-		rows = append(rows, s)
-		total += s.Secs
-		sessions += s.Sessions
-	}
-	// most-played first, then by name so equal totals don't shuffle between runs
-	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].Secs != rows[j].Secs {
-			return rows[i].Secs > rows[j].Secs
-		}
-		return sortKey(rows[i].Title) < sortKey(rows[j].Title)
-	})
-
-	// display width, not byte or rune count — ™ and CJK titles would otherwise
-	// pad short and shear the column
-	titleW := 5
-	for _, r := range rows {
-		if n := lipgloss.Width(r.Title); n > titleW {
-			titleW = n
-		}
-	}
-	titleW = min(titleW, 40)
-
-	fmt.Printf("ps3top — play history · %d games · %d sessions · %s total\n\n",
-		len(rows), sessions, fmtDur(total))
-	for _, r := range rows {
-		line := fmt.Sprintf("  %s  %9s  %3d %-9s", truncPad(r.Title, titleW),
-			fmtDur(r.Secs), r.Sessions, plural(r.Sessions, "session"))
-		if r.PeakCPU > 0 {
-			line += fmt.Sprintf("  peak %d°", r.PeakCPU)
-		}
-		if a := fmtAgo(r.Last); a != "" {
-			line += "  " + a
-		}
-		fmt.Println(line)
-	}
-	if !h.first.IsZero() {
-		fmt.Printf("\nsince %s\n", h.first.Local().Format("2006-01-02"))
-	}
-	if h.firstHDD != unknown && h.lastHDD != unknown {
-		if d := h.lastHDD - h.firstHDD; d <= -0.1 || d >= 0.1 {
-			fmt.Printf("HDD %.1fG free (%+.1fG since first record)\n", h.lastHDD, d)
-		}
-	}
 }
 
 func plural(n int, word string) string {

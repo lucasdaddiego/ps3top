@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // Every action key, taken all the way to the wire. The guard tests stop at the
@@ -107,7 +107,7 @@ func TestPopupReachesTheConsole(t *testing.T) {
 	m.cli = NewClient(strings.TrimPrefix(srv.URL, "http://"))
 	m.handleKey(key("m"))
 	for _, r := range "hi" {
-		m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m.handleKey(tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
 	_, cmd := m.handleKey(key("enter"))
 	exec(t, m, cmd)
@@ -293,7 +293,7 @@ func TestNewModelWithoutHistory(t *testing.T) {
 func TestViewBeforeTheFirstResize(t *testing.T) {
 	m := liveModel(t, 120)
 	m.width = 0
-	if got := m.View(); got != "starting…" {
+	if got := m.frame(); got != "starting…" {
 		t.Errorf("View before a size = %q", got)
 	}
 	// the art panel widens the frame and narrows the list
@@ -304,31 +304,29 @@ func TestViewBeforeTheFirstResize(t *testing.T) {
 	if bare := m.listWidth(); bare <= wide {
 		t.Error("the art panel didn't reserve any width")
 	}
-	if !strings.Contains(m.View(), "Sample Game") {
+	if !strings.Contains(m.frame(), "Sample Game") {
 		t.Error("View dropped the library")
 	}
 	m.artOn = true
-	m.View() // with the panel joined on
+	m.frame() // with the panel joined on
 }
 
 func TestAlarmRingsOnceOnCrossing(t *testing.T) {
-	defer quitting.Store(false)
-	quitting.Store(false)
 	m := liveModel(t, 120)
 	m.alarm, m.alarming = 70, false
 
 	hot := m.st
 	hot.CPUTemp = 82
-	out := captureStdout(t, func() { m.Update(statusMsg{st: hot}) })
-	if !strings.Contains(out, "\a") {
+	_, cmd := m.Update(statusMsg{st: hot})
+	if !strings.Contains(raw(cmd), "\a") {
 		t.Error("crossing the alarm threshold didn't ring the bell")
 	}
 	if !m.alarming {
 		t.Error("alarm state not latched")
 	}
 	// still hot on the next poll: no second bell
-	out = captureStdout(t, func() { m.Update(statusMsg{st: hot}) })
-	if strings.Contains(out, "\a") {
+	_, cmd = m.Update(statusMsg{st: hot})
+	if strings.Contains(raw(cmd), "\a") {
 		t.Error("the bell rang again while already alarming")
 	}
 }
@@ -362,9 +360,8 @@ func TestSessionSwitchWithABrokenLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := &history{
-		path:     filepath.Join(dir, "blocked", "sub", "history.ndjson"),
-		stats:    map[string]gameStat{},
-		firstHDD: unknown, lastHDD: unknown,
+		path:  filepath.Join(dir, "blocked", "sub", "history.ndjson"),
+		stats: map[string]gameStat{},
 	}
 	m := testModel(t, dir, h)
 	m.trackSession(Status{InGame: true, GameID: "MOCK1", GameTitle: "One", PlaySecs: 3600})
@@ -434,9 +431,9 @@ func TestRenderingInATinyTerminal(t *testing.T) {
 		m.tabLine()
 		m.metricsRow(lipgloss.NewStyle())
 		m.footer()
-		m.View()
+		m.frame()
 		m.thermalOn = true
-		m.View()
+		m.frame()
 	}
 }
 
@@ -676,7 +673,7 @@ func TestHistoryAddFailurePaths(t *testing.T) {
 	if err := os.Mkdir(asDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	h := &history{path: asDir, stats: map[string]gameStat{}, firstHDD: unknown, lastHDD: unknown}
+	h := &history{path: asDir, stats: map[string]gameStat{}}
 	if err := h.add(sessionRec{ID: "MOCK1", Title: "Game", Secs: 60, End: time.Now()}); err == nil {
 		t.Error("appending to a directory reported success")
 	}
@@ -696,32 +693,6 @@ func TestLoadHistoryOpenFailure(t *testing.T) {
 	}
 	if h == nil || h.stats == nil {
 		t.Error("loadHistory must always return a usable history")
-	}
-	// runStats says so on stderr and still prints the empty-history line
-	if out := captureStdout(t, func() { runStats(dir) }); !strings.Contains(out, "no play history") {
-		t.Errorf("runStats over a broken log printed:\n%s", out)
-	}
-}
-
-// Equal totals must not shuffle between runs, or the leaderboard reorders
-// itself every time you look at it.
-func TestRunStatsTieBreaksByName(t *testing.T) {
-	dir := t.TempDir()
-	h := mustLoad(t, dir)
-	now := time.Now()
-	for _, title := range []string{"Zulu", "Alpha", "Mike"} {
-		if err := h.add(sessionRec{ID: title, Title: title, Started: now, End: now, Secs: 600}); err != nil {
-			t.Fatal(err)
-		}
-	}
-	first := captureStdout(t, func() { runStats(dir) })
-	for i := 0; i < 5; i++ {
-		if got := captureStdout(t, func() { runStats(dir) }); got != first {
-			t.Fatal("equal totals reordered between runs")
-		}
-	}
-	if strings.Index(first, "Alpha") > strings.Index(first, "Mike") {
-		t.Error("equal totals aren't broken by name")
 	}
 }
 
