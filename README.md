@@ -286,9 +286,14 @@ skips the confirm.
 
 ## How it talks to the PS3 (and why it's gentle)
 
-- One `GET /cpursx.ps3` per 15s (webMAN's own web-UI refresh cadence; the page
-  is ~6.6KB and carries every field server-rendered). Immediate extra poll
-  after an action. Launch is that one poll, alone: the game list is fetched
+- One `GET /cpursx.ps3` per 15s on the XMB (webMAN's own web-UI refresh
+  cadence; the page is ~6.6KB and carries every field server-rendered) and
+  **every 30s while a game is running** — that's when the console is busiest,
+  so that's where ps3top asks least — dropping back to 15s the moment a
+  sensor reaches 70°, since alarm latency is the one reason to poll a running
+  game fast. At the slow cadence each reading fills two sparkline slots, so
+  the x axis stays one slot per 15s and a full ring stays an hour. Immediate
+  extra poll after an action. Launch is that one poll, alone: the game list is fetched
   once the first status has answered (and again whenever the console comes
   back from an outage), so startup never has more than two connections open
   and a host that turns out not to be webMAN is never asked for a list. **One console-state request in flight at a time** — status

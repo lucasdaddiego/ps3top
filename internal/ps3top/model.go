@@ -126,6 +126,9 @@ type model struct {
 	inFlight   bool // status poll out
 	actBusy    bool // mount/play/eject/popup/power/rescan out
 	needStatus bool // a poll came due while busy; take it once the path is clear
+	// tickSpan is the gap the last tick was scheduled at — the slow in-game
+	// cadence makes one reading stand for two ring slots (slotsPolled)
+	tickSpan time.Duration
 	// how many fields the last successful poll couldn't find, so the
 	// "markup changed" flash can fire on the way INTO a worse state rather
 	// than once per process — see the statusMsg handler

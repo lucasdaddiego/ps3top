@@ -8,10 +8,14 @@ import (
 	"time"
 )
 
-func (m *model) pushSamples(st Status) {
-	m.hCPU.push(st.CPUTemp)
-	m.hRSX.push(st.RSXTemp)
-	m.hFan.push(st.FanPct)
+// pushSamples records one reading into the history rings, n slots' worth —
+// see slotsPolled for why a reading can stand for two.
+func (m *model) pushSamples(st Status, n int) {
+	for range max(1, n) {
+		m.hCPU.push(st.CPUTemp)
+		m.hRSX.push(st.RSXTemp)
+		m.hFan.push(st.FanPct)
+	}
 }
 
 // trackSession folds one poll into the open play session, closing it out when

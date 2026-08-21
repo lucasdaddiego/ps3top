@@ -117,6 +117,41 @@ func (m *model) refreshNow() tea.Cmd {
 	return m.fetchStatus()
 }
 
+// warmTemp is where the slow in-game cadence gives way: a sensor at or past
+// it is one the alarm might be about to fire on, and alarm latency is the
+// one reason to poll a running game fast.
+const warmTemp = 70
+
+// pollEvery is the gap to the next status poll. The console is busiest
+// with a game running, so that's where ps3top asks least — every other
+// interval — until a sensor is warm, when the thermal picture matters more
+// than the request. The XMB gets the plain interval: it's idle, and a game
+// starting there is worth noticing within the 15s. Offline has its own floor.
+func (m *model) pollEvery() time.Duration {
+	if !m.online {
+		return max(m.interval, offlineRetry)
+	}
+	if m.st.InGame && m.st.CPUTemp < warmTemp && m.st.RSXTemp < warmTemp {
+		return 2 * m.interval
+	}
+	return m.interval
+}
+
+// slotsPolled is how many interval-sized slots of the history rings the poll
+// that just answered stands for: two at the slow cadence, so the x axis
+// stays one slot per interval and a 240-slot ring stays an hour. The
+// reading is the best estimate of the slot it skipped — temperatures don't
+// move in fifteen seconds — and a scheduled span is consumed by the first
+// status that lands, so a manual refresh in between counts once, as before.
+func (m *model) slotsPolled() int {
+	span := m.tickSpan
+	m.tickSpan = 0
+	if m.interval > 0 && span >= 2*m.interval {
+		return 2
+	}
+	return 1
+}
+
 // catchUp takes the poll that was skipped while the console was busy, once
 // nothing is in flight and the fan queue has drained.
 func (m *model) catchUp() tea.Cmd {
@@ -267,10 +302,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.replaceCovers(), m.ensureCover())
 
 	case tickMsg:
-		next := m.interval
-		if !m.online && next < offlineRetry {
-			next = offlineRetry
-		}
+		next := m.pollEvery()
+		m.tickSpan = next
 		// a fan command or action mid-flight will answer with fresher state than
 		// this poll would, and overlapping them lets an older status page
 		// overwrite a newer fan reading — so defer rather than race
@@ -289,7 +322,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastErr = msg.err
 			// record the outage as gaps so the sparkline's x axis stays
 			// honest — an offline stretch is blank, not silently compressed
-			m.pushSamples(Status{CPUTemp: unknown, RSXTemp: unknown, FanPct: unknown})
+			m.pushSamples(Status{CPUTemp: unknown, RSXTemp: unknown, FanPct: unknown}, m.slotsPolled())
 			// an auto-discovered address that doesn't answer may have moved
 			return m, m.sweepLAN()
 		}
@@ -297,7 +330,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.online, m.haveStatus, m.lastErr = true, true, nil
 		m.swept = false // the next outage earns its own sweep
 		m.st = msg.st
-		m.pushSamples(msg.st)
+		m.pushSamples(msg.st, m.slotsPolled())
 		var cmds []tea.Cmd
 		nowAlarming := msg.st.CPUTemp >= m.alarm || msg.st.RSXTemp >= m.alarm
 		if nowAlarming && !m.alarming {

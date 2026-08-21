@@ -27,7 +27,7 @@ func liveModel(t *testing.T, width int) *model {
 		LifeDays: 100, Boots: 1234, HardOffs: 34,
 	}
 	for i := 0; i < 60; i++ { // enough history for sparklines and a trend
-		m.pushSamples(Status{CPUTemp: 55 + i/6, RSXTemp: 60, FanPct: 26})
+		m.pushSamples(Status{CPUTemp: 55 + i/6, RSXTemp: 60, FanPct: 26}, 1)
 	}
 	m.games = []Game{
 		{Title: "Sample Game™ 2", ID: "MOCK30982", Category: "hdd0/PS3ISO", Path: "/dev_hdd0/PS3ISO/SampleGame2.iso"},

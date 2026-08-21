@@ -1019,3 +1019,59 @@ func TestDecodeCoverUndecodable(t *testing.T) {
 		t.Error("a header with no image data was accepted")
 	}
 }
+
+// The console is busiest with a game running, so that's where ps3top polls
+// least: every other interval in-game, the plain interval on the XMB — and
+// back to the plain interval the moment a sensor is warm, since alarm
+// latency is the one reason to poll a running game fast.
+func TestPollSlowsDownInGameUntilWarm(t *testing.T) {
+	m := liveModel(t, 120)
+	m.interval = 15 * time.Second
+	m.st.InGame, m.st.CPUTemp, m.st.RSXTemp = true, 58, 61
+	if got := m.pollEvery(); got != 30*time.Second {
+		t.Errorf("in-game, cool: poll every %v, want 30s", got)
+	}
+	m.st.RSXTemp = warmTemp
+	if got := m.pollEvery(); got != 15*time.Second {
+		t.Errorf("in-game, warm: poll every %v, want 15s", got)
+	}
+	m.st.InGame, m.st.RSXTemp = false, 61
+	if got := m.pollEvery(); got != 15*time.Second {
+		t.Errorf("on the XMB: poll every %v, want 15s", got)
+	}
+	m.online = false
+	if got := m.pollEvery(); got != offlineRetry {
+		t.Errorf("offline: poll every %v, want the %v floor", got, offlineRetry)
+	}
+}
+
+// At the slow cadence one reading stands for two ring slots, so the
+// sparkline's x axis stays one slot per interval and a full ring stays an
+// hour. A tick at the plain cadence — or a manual refresh — counts once.
+func TestSlowPollFillsTwoRingSlots(t *testing.T) {
+	m := liveModel(t, 120)
+	m.interval = 15 * time.Second
+	m.hCPU, m.hRSX, m.hFan = series{}, series{}, series{}
+	m.st.InGame, m.st.CPUTemp, m.st.RSXTemp = true, 58, 61
+
+	m.Update(tickMsg{}) // schedules the slow poll
+	if m.tickSpan != 30*time.Second {
+		t.Fatalf("tick span = %v, want 30s", m.tickSpan)
+	}
+	m.Update(statusMsg{st: m.st})
+	if n := m.hCPU.n; n != 2 {
+		t.Errorf("a slow poll filled %d slots, want 2", n)
+	}
+	// the span was consumed: a refresh before the next tick counts once
+	m.Update(statusMsg{st: m.st})
+	if n := m.hCPU.n; n != 3 {
+		t.Errorf("a follow-up status filled %d slots total, want 3", n)
+	}
+	// and an outage at the slow cadence is two gap slots, not one
+	m.st.InGame = true
+	m.Update(tickMsg{})
+	m.Update(statusMsg{err: errTest})
+	if n := m.hCPU.n; n != 5 {
+		t.Errorf("a slow-cadence outage filled %d slots total, want 5", n)
+	}
+}
