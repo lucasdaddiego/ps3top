@@ -458,9 +458,15 @@ func (m *model) renderRow(gi int, sel bool) string {
 	}
 
 	num := fmt.Sprintf("%*d", numW, m.secNums[gi])
-	idCol := strings.Repeat(" ", 11)
-	if g.ID != "" {
-		idCol = "[" + g.ID + "]"
+	// the ID column only earns its place when the art panel isn't showing —
+	// with the panel up the ID sits under the cover, and the column's width
+	// is worth more to the cover than to a number repeated beside every row
+	idCol := ""
+	if !m.artShown() {
+		idCol = strings.Repeat(" ", 11)
+		if g.ID != "" {
+			idCol = "[" + g.ID + "]"
+		}
 	}
 	mark := ""
 	if m.mounted(g) {
@@ -478,7 +484,7 @@ func (m *model) renderRow(gi int, sel bool) string {
 
 	// stable title column: as wide as the longest title, shrunk only if the
 	// window can't fit it
-	avail := w - 2 - numW - 2 - 1 - 11 - len(" x mounted") - 1
+	avail := w - 2 - numW - 2 - 1 - len(idCol) - len(" x mounted") - 1
 	if m.playColW > 0 {
 		avail -= m.playColW + 2 // +2 keeps it off the mounted mark
 	}
@@ -488,7 +494,9 @@ func (m *model) renderRow(gi int, sel bool) string {
 	b.WriteString(st.bar)
 	b.WriteString(st.dim.Render(num + "  "))
 	b.WriteString(st.main.Render(title + " "))
-	b.WriteString(st.dim.Render(idCol))
+	if idCol != "" {
+		b.WriteString(st.dim.Render(idCol))
+	}
 	if mark != "" {
 		b.WriteString(st.ok.Render(mark))
 	}
@@ -538,8 +546,16 @@ func (m *model) artPanel() string {
 		cover = lipgloss.Place(artCols, artRows, lipgloss.Center, lipgloss.Center, dimSt.Render(wait))
 	}
 
+	// Under the box, artTextRows lines at most — every row the text doesn't
+	// take is a row the cover can have. The title is clipped to one line
+	// rather than wrapped, the mounted mark rides on it, and the play total
+	// and last-played share a line.
 	cw := artCols + 2
 	center := lipgloss.NewStyle().Width(cw).Align(lipgloss.Center)
+	title := g.Title
+	if m.mounted(g) {
+		title = okSt.Render("● ") + title
+	}
 	meta := g.ID
 	if meta == "" {
 		meta = g.Console()
@@ -552,18 +568,15 @@ func (m *model) artPanel() string {
 	}
 	parts := []string{
 		coverBoxSt.Render(cover),
-		center.Bold(true).Render(g.Title),
-		center.Render(dimSt.Render(meta)),
+		center.Bold(true).Render(ansi.Truncate(title, cw, "…")),
+		center.Render(dimSt.Render(ansi.Truncate(meta, cw, "…"))),
 	}
 	if s, ok := m.hist.stat(g); ok {
-		parts = append(parts, center.Render(dimSt.Render(
-			fmt.Sprintf("%s · %d %s", fmtDur(s.Secs), s.Sessions, plural(s.Sessions, "session")))))
+		play := fmt.Sprintf("%s · %d %s", fmtDur(s.Secs), s.Sessions, plural(s.Sessions, "session"))
 		if a := fmtAgo(s.Last); a != "" {
-			parts = append(parts, center.Render(dimSt.Render("last "+a)))
+			play += " · last " + a
 		}
-	}
-	if m.mounted(g) {
-		parts = append(parts, center.Render(okSt.Render("● mounted")))
+		parts = append(parts, center.Render(dimSt.Render(ansi.Truncate(play, cw, "…"))))
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }

@@ -141,10 +141,10 @@ func TestArtBoxScalesWithTheTerminal(t *testing.T) {
 		width, listH int
 		cols, rows   int
 	}{
-		{84, 20, artMinCols, 13},          // the art threshold: narrowest box, rows from the height
-		{120, 23, 28, 16},                 // 30 cols on offer, 16 rows, width given back to 28
-		{125, 25, 31, 18},                 // a 125×32 Ghostty window
-		{200, 30, 40, 23},                 // wide and tall: 50 → 48 cols, 23 rows, width back to 40
+		{84, 20, 26, 15},                  // the art threshold: 28 cols on offer, 15 rows, width back to 26
+		{120, 23, 31, 18},                 // 40 cols on offer, 18 rows, width given back to 31
+		{125, 25, 35, 20},                 // a 125×32 Ghostty window
+		{200, 30, 43, 25},                 // wide and tall: 66 → 48 cols, 25 rows, width back to 43
 		{300, 12, artMinCols, artMinRows}, // very wide but short: rows floored, and the width given back
 		{300, 60, artMaxCols, 28},         // the ceiling: 48 cols, capped at the portrait's 28 rows
 	} {
@@ -161,9 +161,13 @@ func TestArtBoxScalesWithTheTerminal(t *testing.T) {
 			t.Errorf("artBox(%d, %d) = %d×%d: a portrait cover only reaches %d×%d", c.width, c.listH, cols, rows, pc, pr)
 		}
 	}
-	// a taller cell aspect means fewer rows for the same width
-	if _, rows := artBox(125, 40, 2.4); rows >= 18 {
-		t.Errorf("1:2.4 cells: box has %d rows, want fewer than at 1:2", rows)
+	// a taller cell aspect means fewer rows for the same width once the
+	// height isn't the limit: 41 cols of portrait is 24 rows at 1:2, 20 at 1:2.4
+	if _, rows := artBox(125, 40, 2); rows != 24 {
+		t.Errorf("1:2 cells: box has %d rows, want 24", rows)
+	}
+	if _, rows := artBox(125, 40, 2.4); rows != 20 {
+		t.Errorf("1:2.4 cells: box has %d rows, want 20", rows)
 	}
 }
 

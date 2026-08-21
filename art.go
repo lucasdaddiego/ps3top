@@ -29,7 +29,7 @@ const (
 	artMinCols  = 24
 	artMaxCols  = 48 // the diacritics table is the ceiling
 	artMinRows  = 7
-	artTextRows = 5 // under the box: title (up to two lines), meta, play total, last played
+	artTextRows = 3 // under the box: title, meta, play total + last played
 	placeholder = '\U0010EEEE'
 )
 
@@ -39,7 +39,7 @@ const portraitW, portraitH = 260, 300
 // artBox is the cover box for a terminal of this width and list height, at a
 // given cell aspect.
 func artBox(width, listH int, aspect float64) (cols, rows int) {
-	cols = clamp(width/4, artMinCols, artMaxCols)
+	cols = clamp(width/3, artMinCols, artMaxCols)
 	// taller than a portrait cover at this width and no cover could use the
 	// rows; and a short window gives the width back, since a box wider than
 	// its rows can fill only costs the list columns

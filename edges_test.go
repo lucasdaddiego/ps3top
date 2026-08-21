@@ -836,8 +836,10 @@ func TestArtPanelShowsMountedDisc(t *testing.T) {
 	m.games[0].Path = "/dev_hdd0/PS3ISO/SampleGame2.iso"
 	m.st.MountedISO = m.games[0].Path
 	m.online = true
-	if got := m.artPanel(); !strings.Contains(got, "mounted") {
-		t.Errorf("art panel doesn't mark the mounted disc:\n%s", got)
+	// the mark rides on the title line — a line of its own would be a row
+	// taken from the cover
+	if got := m.artPanel(); !strings.Contains(got, "● ") || strings.Contains(got, "● mounted") {
+		t.Errorf("art panel doesn't mark the mounted disc on the title line:\n%s", got)
 	}
 }
 

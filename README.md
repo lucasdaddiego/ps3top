@@ -17,7 +17,10 @@ game, and mount/launch/eject of the game library, in one dashboard. Built
 ── ⏎ mount · p play · u eject · / filter · s sort · t thermals · r refresh · g rescan · q quit ─────
 ```
 
-(A real terminal also carries the cover art panel on the right, at ≥84 cols.)
+(A real terminal also carries the cover art panel on the right, at ≥84 cols —
+and with the panel up, the `[ID]` column goes: the ID sits under the cover,
+and the column's width is worth more to the cover than to a number beside
+every row.)
 The status frame turns red while the temp alarm is active. Healthy metric
 values render green; the active console tab is highlighted in the brand blue.
 
@@ -233,7 +236,7 @@ twice — only readings starting within five minutes of each other merge.
 What it buys you: `s` toggles the list between alphabetical and
 recently-played (so the handful of games you actually play float above the
 alphabetical wall), rows carry a dim play total, the art panel gains
-`38h12m · 9 sessions` / `last 2h ago`, and quitting a game flashes
+`38h12m · 9 sessions · last 2h ago`, and quitting a game flashes
 `Borderlands™ 2 — 2h14m (peak 71°/74°)`.
 
 ## Keys
@@ -320,8 +323,8 @@ skips the confirm.
   than guessed at. Each cover is placed
   at its own aspect inside the art box rather than stretched to it, since
   kitty scales an image to exactly the cells it's given — a portrait cover
-  stays portrait. The box is sized from the terminal (a quarter of the width,
-  24–48 columns, as many rows as the panel's text leaves) and the placement
+  stays portrait. The box is sized from the terminal (a third of the width,
+  24–48 columns, as many rows as the three text lines under it leave) and the placement
   is shaped at the terminal's *measured* cell aspect (`TIOCGWINSZ` pixel
   fields; kitty and Ghostty fill them in, 1:2 assumed otherwise) — the
   terminal letterboxes inside a placement of the wrong shape, and that strip
