@@ -259,6 +259,9 @@ func resample(vals []int, n int) []int {
 // --- the screen ---
 
 func (m *model) thermalView() string {
+	if m.thermalPage == 1 {
+		return m.thermalHistoryView()
+	}
 	w, h := m.width, m.listH
 	var out []string
 
@@ -458,4 +461,77 @@ func (m *model) fanRow(w int) []string {
 	}
 	pad := max(1, w-lipgloss.Width(left)-lipgloss.Width(right))
 	return []string{left + strings.Repeat(" ", pad) + right}
+}
+
+// --- the history page (h) ---
+
+// thermalHistCaption is the tab strip's right-hand text on the history
+// page: how far back the log goes and how much of it there is.
+func (m *model) thermalHistCaption() string {
+	if len(m.tHist) == 0 {
+		return " no log yet "
+	}
+	first := m.tHist[0].T
+	return fmt.Sprintf(" since %s · %s logged ", first.Local().Format("2006-01-02"), fmtDur(len(m.tHist)*60))
+}
+
+// thermalHistoryView lays the log out by week, newest first: how long it
+// was polled, the hottest readings and the typical ones, and how the fan
+// split its time across the header's colour bands. The one question it
+// exists to answer is "is it running hotter than it used to", so the weeks
+// are rows and the columns line up.
+func (m *model) thermalHistoryView() string {
+	if m.tHistErr != nil {
+		return dimSt.Render("  thermal log: " + m.tHistErr.Error())
+	}
+	if len(m.tHist) == 0 {
+		return dimSt.Render("  no thermal log yet — one line a minute lands while ps3top polls")
+	}
+	weeks := weeklyStats(m.tHist)
+
+	// headline: the all-time peaks, dated
+	hot := m.tHist[0]
+	hotR := m.tHist[0]
+	for _, r := range m.tHist {
+		if r.CPU > hot.CPU {
+			hot = r
+		}
+		if r.RSX > hotR.RSX {
+			hotR = r
+		}
+	}
+	out := []string{
+		"  " + dimSt.Render("hottest  ") + cpuSt.Render(fmt.Sprintf("CPU %d°", hot.CPU)) + dimSt.Render(" on "+hot.T.Local().Format("2 Jan")) +
+			"   " + rsxSt.Render(fmt.Sprintf("RSX %d°", hotR.RSX)) + dimSt.Render(" on "+hotR.T.Local().Format("2 Jan")),
+		"",
+		"  " + dimSt.Render(fmt.Sprintf("%-12s %7s   %-14s   %-14s   %s", "week of", "logged", "CPU peak / avg", "RSX peak / avg", "fan <50  50–69  70+")),
+	}
+	rowsLeft := m.listH - len(out)
+	for i, w := range weeks {
+		if i >= rowsLeft {
+			break
+		}
+		out = append(out, "  "+fmt.Sprintf("%-12s %7s   ", w.Start.Format("2006-01-02"), fmtDur(w.Minutes*60))+
+			pad(tempVal(w.PeakCPU, m.alarm)+dimSt.Render(" / ")+tempVal(w.AvgCPU, m.alarm), 14)+"   "+
+			pad(tempVal(w.PeakRSX, m.alarm)+dimSt.Render(" / ")+tempVal(w.AvgRSX, m.alarm), 14)+"   "+
+			fanBands(w))
+	}
+	return strings.Join(out, "\n")
+}
+
+// fanBands renders a week's fan split in the header's colours: the share of
+// minutes under 50%, 50–69 and 70+, which is also the reading "was it
+// SYSCON quietly ramping all week" comes from.
+func fanBands(w weekStat) string {
+	return okSt.Render(fmt.Sprintf("%3d%%", w.FanLow)) + "   " +
+		warnSt.Render(fmt.Sprintf("%3d%%", w.FanMid)) + "   " +
+		critSt.Render(fmt.Sprintf("%3d%%", w.FanHigh))
+}
+
+// pad right-pads a styled cell to a display width.
+func pad(s string, w int) string {
+	if n := w - lipgloss.Width(s); n > 0 {
+		return s + strings.Repeat(" ", n)
+	}
+	return s
 }

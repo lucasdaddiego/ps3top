@@ -215,6 +215,17 @@ When the header can't hold everything, it gives up the least live thing first:
 full lifetime counters → `∞ Nd` only → sparklines → metric readings last. The
 keybar has a short form for the same reason.
 
+## Thermal history (`h` inside `t`)
+
+The one-hour rings can't answer "is it running hotter than in May", so every
+minute of polling appends one line to `~/Library/Application Support/ps3top/
+thermal.ndjson` (XDG data dir on Linux): the minute's peak CPU, RSX and fan.
+Downsampled on the way in — ~60 bytes a minute, no compactor — and read only
+when the page is opened. The page lays the log out by week, newest first:
+hours logged, CPU and RSX peak / average, and how the fan split its minutes
+across the header's colour bands (<50 · 50–69 · 70+), with the all-time
+peaks dated above. The open minute is written on quit.
+
 ## Play history
 
 The PS3 keeps no record of how long you've played anything. ps3top appends one
@@ -268,7 +279,8 @@ identity instead of dumping the cursor back to row 1.
 
 Inside the thermal screen: `+`/`−` (or `↑↓`) fan speed in manual mode, target
 temperature in dynamic — the footer names whichever it currently is · `f` fan
-mode · `r` refresh · `esc` (or `t`, or `q`) back. `q` closes the screen rather than quitting ps3top
+mode · `h` the long-term history page (and back) · `r` refresh · `esc` (or
+`t`, or `q`) back. `q` closes the screen rather than quitting ps3top
 — quitting out of a subscreen on the key that everywhere else means "back" is
 a nasty surprise mid-session.
 
@@ -419,6 +431,7 @@ thousand lines of tests for nothing. The files carve it by concern instead
 | `patch.go` | Sony's title-update index, behind a pinned root |
 | `history.go` | the NDJSON play log behind the play totals |
 | `spark.go` | metric rings + sparkline renderer |
+| `thermallog.go` | the per-minute thermal log and its weekly fold |
 | `art.go` / `cover.go` | kitty-graphics plumbing / cover fetch + cache |
 
 Each `*_test.go` matches its file, plus `state_test.go`/`edges_test.go` for

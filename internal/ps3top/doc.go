@@ -18,6 +18,7 @@
 //	patch.go    Sony's title-update index (patch-available mark), pinned root
 //	history.go  the NDJSON play log behind the play totals
 //	spark.go    fixed-size metric rings and the sparkline renderer
+//	thermallog.go  the per-minute thermal log behind the thermal screen's history page
 //	art.go      kitty-graphics cover plumbing (transmit/placeholder/cleanup)
 //	cover.go    cover fetch + on-disk PNG cache
 package ps3top

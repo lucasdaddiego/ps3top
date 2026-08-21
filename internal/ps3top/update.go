@@ -267,6 +267,9 @@ func (m *model) anyShown() bool {
 // can't race a frame or a transmission still in flight.
 func (m *model) quit() tea.Cmd {
 	m.flushSession()
+	if m.tlog != nil {
+		_ = m.tlog.flush() // the open minute; nowhere left to report a failure
+	}
 	if !m.anyShown() {
 		return tea.Quit
 	}
@@ -423,6 +426,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.st = msg.st
 		m.pushSamples(msg.st, m.slotsPolled())
 		var cmds []tea.Cmd
+		if m.tlog != nil {
+			if err := m.tlog.note(timeNow(), msg.st); err != nil && !m.tlogWarned {
+				m.tlogWarned = true
+				m.flash = "thermal log: " + err.Error()
+				cmds = append(cmds, m.clearFlashLater())
+			}
+		}
 		nowAlarming := msg.st.CPUTemp >= m.alarm || msg.st.RSXTemp >= m.alarm
 		if nowAlarming && !m.alarming {
 			cmds = append(cmds, tea.Raw("\a")) // the bell, once, on the way into the alarm
@@ -564,6 +574,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		ref.shown = true
 		m.covers[msg.icon] = ref
 		return m, m.ensureCover()
+
+	case thermalHistMsg:
+		m.tHist, m.tHistErr = msg.recs, msg.err
+		return m, nil
 
 	case sizesMsg:
 		if msg.err != nil {
@@ -709,8 +723,24 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.thermalOn {
 		switch msg.String() {
 		case "t", "esc", "q":
-			m.thermalOn = false
+			m.thermalOn, m.thermalPage = false, 0
 			return m, m.ensureCover() // the cover for the selected row comes back
+		case "h":
+			// the long-term page, read fresh each time it's opened: the log
+			// is appended every minute and the page should say so
+			if m.thermalPage == 1 {
+				m.thermalPage = 0
+				return m, nil
+			}
+			m.thermalPage = 1
+			if m.tlog == nil {
+				return m, nil
+			}
+			p := m.tlog.path
+			return m, func() tea.Msg {
+				recs, err := loadThermal(p)
+				return thermalHistMsg{recs, err}
+			}
 		// arrows drive the fan here: there's no list to navigate on this
 		// screen, so they're free and they're the obvious thing to reach for
 		case "up", "k", "+", "=":

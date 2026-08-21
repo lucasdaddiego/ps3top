@@ -49,6 +49,11 @@ type (
 		err  error
 	}
 	coverShownMsg struct{ icon string }
+	// thermalHistMsg is the long-term log, read when its page is opened
+	thermalHistMsg struct {
+		recs []thermalRec
+		err  error
+	}
 	// sizesMsg is one ISO folder's listing, sizes keyed by mount path
 	sizesMsg struct {
 		folder string
@@ -159,6 +164,13 @@ type model struct {
 	sortRecent bool
 	playColW   int  // width reserved for the per-row play total (0 = no history)
 	thermalOn  bool // `t` — full-body temperature screen with fan control
+	// the thermal screen's second page (`h` there): the long-term log, read
+	// on entry, folded into weeks
+	thermalPage int
+	tlog        *thermalLog // nil = not logging (tests); set by Run
+	tlogWarned  bool        // a write error is flashed once, not every minute
+	tHist       []thermalRec
+	tHistErr    error
 
 	// fan presses are queued and sent one at a time, in press order — see queueFan
 	fanBusy  bool

@@ -377,8 +377,11 @@ func (m *model) tabLine() string {
 	// the thermal screen borrows the tab strip as its own title bar — the
 	// console tabs mean nothing while the list is hidden
 	if m.thermalOn {
-		left := dimSt.Render("── ") + tabOnSt.Render(" thermals ") + dimSt.Render(" ")
-		right := fmt.Sprintf(" alarm %d° · window %s ", m.alarm, fmtDur(int(m.interval.Seconds())*histLen))
+		title, right := " thermals ", fmt.Sprintf(" alarm %d° · window %s ", m.alarm, fmtDur(int(m.interval.Seconds())*histLen))
+		if m.thermalPage == 1 {
+			title, right = " thermal history ", m.thermalHistCaption()
+		}
+		left := dimSt.Render("── ") + tabOnSt.Render(title) + dimSt.Render(" ")
 		return left + rule(dimSt, m.width-lipgloss.Width(left)-lipgloss.Width(right)-2) + dimSt.Render(right+"──")
 	}
 
@@ -653,11 +656,14 @@ func (m *model) footer() string {
 	if m.flash != "" {
 		return m.bookend(warnSt.Render(m.flash))
 	}
+	if m.thermalOn && m.thermalPage == 1 {
+		return m.bookend(dimSt.Render("h live · esc back"))
+	}
 	if m.thermalOn {
 		// through fanHint, not a fixed label: ↑↓ move the target temperature in
 		// dynamic mode, and the footer used to insist they were "fan speed"
 		// while the fan row two lines above correctly said "target"
-		return m.bookend(dimSt.Render(m.fanHint() + " (or +/−) · " + m.fanModeHint() + " · r refresh · esc back"))
+		return m.bookend(dimSt.Render(m.fanHint() + " (or +/−) · " + m.fanModeHint() + " · h history · r refresh · esc back"))
 	}
 	// Widest form that fits: a clipped keybar loses whichever keys happen to
 	// sit at the end, rather than the ones you're least likely to need. The

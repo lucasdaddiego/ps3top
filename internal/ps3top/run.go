@@ -34,7 +34,7 @@ Keys (TUI):
   ↑↓/jk move · ⇥/←→ console tab · ⏎ mount (mounted → launch) · p play
   u eject · / fuzzy filter · s sort alpha↔recent · m popup message on the TV
   r refresh status+game list · g rescan library (webMAN re-scans the ISO dirs)
-  t thermal screen (there: ↑↓/+/− fan step · f fan mode · r refresh · esc back)
+  t thermal screen (there: ↑↓/+/− fan step · f fan mode · h long-term history · r refresh · esc back)
   x quit the running game to the XMB · X restart it · S shutdown · R restart · q quit
 `
 
@@ -113,6 +113,7 @@ func Run(build Build) error {
 	// 30fps caps the renderer's flush ticker — half the default wakeups, and
 	// with a 15s poll cadence even that is mostly idle no-ops.
 	m := newModel(cli, *host, *interval, *alarm, !*noArt, cacheDir, hist)
+	m.tlog = newThermalLog(dataRoot)
 	if auto {
 		m.hostCache = hostCache
 	}
