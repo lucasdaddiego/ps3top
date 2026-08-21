@@ -271,6 +271,27 @@ func (m *model) quit() tea.Cmd {
 	return tea.Sequence(tea.Raw(deleteAllImages), tea.Quit)
 }
 
+// checkPatch asks Sony once per session whether the running title has a
+// newer patch than the version webMAN reports. Off the console's gate —
+// it's a request to the internet, not to the PS3 — and never repeated for
+// a title, whatever the answer.
+func (m *model) checkPatch(st Status) tea.Cmd {
+	if !st.InGame || st.GameID == "" || st.GameVer == "" {
+		return nil
+	}
+	if _, asked := m.patches[st.GameID]; asked {
+		return nil
+	}
+	m.patches[st.GameID] = "" // asked; the reply fills it in
+	id := st.GameID
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		latest, err := patchLookup(ctx, id)
+		return patchMsg{id, latest, err}
+	}
+}
+
 // sweepLAN runs discovery in the background, for a cached address that has
 // stopped answering. Once per offline stretch: the common case is a console
 // that's simply off, and re-probing 254 hosts every 15s to learn that again
@@ -363,6 +384,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !wasOnline {
 			cmds = append(cmds, m.fetchGames())
 		}
+		cmds = append(cmds, m.checkPatch(msg.st))
 		return m, tea.Batch(cmds...)
 
 	case gamesMsg:
@@ -472,6 +494,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		ref.shown = true
 		m.covers[msg.icon] = ref
 		return m, m.ensureCover()
+
+	case patchMsg:
+		if msg.err == nil {
+			m.patches[msg.id] = msg.latest
+		}
+		// a failure leaves the entry absent, and absent means "checked,
+		// nothing to say" for the rest of the session — Sony isn't retried
+		// on every poll
+		return m, nil
 
 	case discoverMsg:
 		m.scanning = false

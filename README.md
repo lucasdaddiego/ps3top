@@ -86,8 +86,12 @@ instead of nagging every 15s, an outage and recovery into the same state don't
 re-warn, and a page that later breaks harder still says so. The em dashes are
 the standing signal; the flash is the explanation.
 
-Header extras: game version (`· v01.15`) next to the running title, and the
-syscon lifetime counters right of the metrics — `∞ 218d · 2709 boots ·
+Header extras: game version (`· v01.15`) next to the running title — with
+`→ 01.17 available` in yellow when Sony's title-update index lists a newer
+patch (one HTTPS GET to `a0.ww.np.dl.playstation.net` per running title per
+session, never to the console; its certificate is Sony's own SHA-1 CA, which
+Go refuses, so the 2004–2037 root is pinned in `patch.go` and the leaf is
+verified by hand) — and the syscon lifetime counters right of the metrics — `∞ 218d · 2709 boots ·
 65 hard-off` (hard-off = power-ons minus clean power-offs).
 
 ## Sparklines
@@ -405,6 +409,7 @@ thousand lines of tests for nothing. The files carve it by concern instead
 | `thermal.go` | the thermal screen (`t`) that fan.go's queue drives |
 | `webman.go` | HTTP client + parsers for webMAN's pages |
 | `discover.go` | the LAN sweep behind auto-discovery |
+| `patch.go` | Sony's title-update index, behind a pinned root |
 | `history.go` | the NDJSON play log behind the play totals |
 | `spark.go` | metric rings + sparkline renderer |
 | `art.go` / `cover.go` | kitty-graphics plumbing / cover fetch + cache |

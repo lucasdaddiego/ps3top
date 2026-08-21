@@ -49,6 +49,11 @@ type (
 		err  error
 	}
 	coverShownMsg struct{ icon string }
+	// patchMsg is Sony's answer about a title's newest patch version
+	patchMsg struct {
+		id, latest string
+		err        error
+	}
 	// discoverMsg is a background LAN sweep's answer, run when the cached
 	// address stops answering (DHCP moved the console, or it was off).
 	discoverMsg struct {
@@ -136,6 +141,10 @@ type model struct {
 
 	hCPU, hRSX, hFan series
 
+	// patches is the newest patch version Sony lists per title ID, asked
+	// once per title per session when it's the running game ("" = none)
+	patches map[string]string
+
 	hist       *history
 	sortRecent bool
 	playColW   int  // width reserved for the per-row play total (0 = no history)
@@ -191,6 +200,7 @@ func newModel(cli *Client, host string, interval time.Duration, alarm int, artOn
 		hist:        hist,
 		covers:      map[string]coverRef{},
 		coverFailed: map[string]bool{},
+		patches:     map[string]string{},
 	}
 	if m.hist == nil { // every read path dereferences it; an empty log is the no-op
 		m.hist = &history{stats: map[string]gameStat{}}

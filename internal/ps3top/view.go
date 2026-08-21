@@ -116,6 +116,11 @@ func (m *model) header() string {
 		state = okSt.Render("▶ ") + selSt.Render(m.st.GameTitle)
 		if m.st.GameVer != "" {
 			state += dimSt.Render(" v" + m.st.GameVer)
+			// Sony still lists the patches; when the installed version
+			// trails the newest, say so where the version already is
+			if latest := m.patches[m.st.GameID]; patchBehind(m.st.GameVer, latest) {
+				state += warnSt.Render(" → " + latest + " available")
+			}
 		}
 		state += dimSt.Render(" · " + m.st.GameID)
 	case m.st.MountedISO != "":

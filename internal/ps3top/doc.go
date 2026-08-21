@@ -15,6 +15,7 @@
 //	thermal.go  the full-body thermal screen (t) that fan.go's queue drives
 //	webman.go   HTTP client + parsers for webMAN's pages
 //	discover.go LAN sweep that finds the console when --host is absent
+//	patch.go    Sony's title-update index (patch-available mark), pinned root
 //	history.go  the NDJSON play log behind the play totals
 //	spark.go    fixed-size metric rings and the sparkline renderer
 //	art.go      kitty-graphics cover plumbing (transmit/placeholder/cleanup)
