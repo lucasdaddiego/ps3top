@@ -18,9 +18,8 @@ game, and mount/launch/eject of the game library, in one dashboard. Built
 ```
 
 (A real terminal also carries the cover art panel on the right, at ≥84 cols —
-and with the panel up, the `[ID]` column goes: the ID sits under the cover,
-and the column's width is worth more to the cover than to a number beside
-every row.)
+and with the panel up, the per-row play total goes: it sits under the cover
+instead, and the column's width is worth more to the cover.)
 The status frame turns red while the temp alarm is active. Healthy metric
 values render green; the active console tab is highlighted in the brand blue.
 
@@ -235,7 +234,8 @@ twice — only readings starting within five minutes of each other merge.
 
 What it buys you: `s` toggles the list between alphabetical and
 recently-played (so the handful of games you actually play float above the
-alphabetical wall), rows carry a dim play total, the art panel gains
+alphabetical wall), rows carry a dim play total when the art panel is
+hidden, the art panel gains
 `38h12m · 9 sessions · last 2h ago`, and quitting a game flashes
 `Borderlands™ 2 — 2h14m (peak 71°/74°)`.
 

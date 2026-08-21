@@ -458,24 +458,21 @@ func (m *model) renderRow(gi int, sel bool) string {
 	}
 
 	num := fmt.Sprintf("%*d", numW, m.secNums[gi])
-	// the ID column only earns its place when the art panel isn't showing —
-	// with the panel up the ID sits under the cover, and the column's width
-	// is worth more to the cover than to a number repeated beside every row
-	idCol := ""
-	if !m.artShown() {
-		idCol = strings.Repeat(" ", 11)
-		if g.ID != "" {
-			idCol = "[" + g.ID + "]"
-		}
+	idCol := strings.Repeat(" ", 11)
+	if g.ID != "" {
+		idCol = "[" + g.ID + "]"
 	}
 	mark := ""
 	if m.mounted(g) {
 		mark = " ● mounted"
 	}
 	// the play column is sized once for the whole library and reserved on
-	// every row, so titles don't go ragged between played and unplayed games
+	// every row, so titles don't go ragged between played and unplayed games.
+	// It only earns its place when the art panel isn't showing: with the
+	// panel up the total sits under the cover, and the column's width is
+	// worth more to the cover than to a number repeated beside every row.
 	played := ""
-	if m.playColW > 0 {
+	if m.playColW > 0 && !m.artShown() {
 		if s, ok := m.hist.stat(g); ok {
 			played = fmtDur(s.Secs)
 		}
@@ -484,8 +481,8 @@ func (m *model) renderRow(gi int, sel bool) string {
 
 	// stable title column: as wide as the longest title, shrunk only if the
 	// window can't fit it
-	avail := w - 2 - numW - 2 - 1 - len(idCol) - len(" x mounted") - 1
-	if m.playColW > 0 {
+	avail := w - 2 - numW - 2 - 1 - 11 - len(" x mounted") - 1
+	if played != "" {
 		avail -= m.playColW + 2 // +2 keeps it off the mounted mark
 	}
 	title := truncPad(g.Title, clamp(m.titleColW, 10, avail))
@@ -494,9 +491,7 @@ func (m *model) renderRow(gi int, sel bool) string {
 	b.WriteString(st.bar)
 	b.WriteString(st.dim.Render(num + "  "))
 	b.WriteString(st.main.Render(title + " "))
-	if idCol != "" {
-		b.WriteString(st.dim.Render(idCol))
-	}
+	b.WriteString(st.dim.Render(idCol))
 	if mark != "" {
 		b.WriteString(st.ok.Render(mark))
 	}
