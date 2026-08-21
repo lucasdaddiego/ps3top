@@ -210,9 +210,26 @@ func (m *model) metricLine(sparks bool) string {
 		rsx += sparkPart(&m.hRSX, tempSpan, true)
 		fan += sparkPart(&m.hFan, fanSpan, false)
 	}
-	return cpu + "   " + rsx + "   " + fan + "   " +
-		dimSt.Render("HDD ") + hddVal(m.st.HDDFreeGB) + "   " +
+	hdd := dimSt.Render("HDD ") + hddVal(m.st.HDDFreeGB)
+	// "room for N more" rides with the sparklines: it's the rich variant's
+	// garnish, and the bare line is the one that has to fit a narrow window
+	if n := m.roomFor(); sparks && n > 0 {
+		hdd += dimSt.Render(fmt.Sprintf(" ~%d more", n))
+	}
+	return cpu + "   " + rsx + "   " + fan + "   " + hdd + "   " +
 		dimSt.Render("MEM ") + memVal(m.st.MemFreeKB)
+}
+
+// fmtSize renders a file size the way the header renders HDD space: binary
+// units, one decimal — "9.3G", "645M".
+func fmtSize(n int64) string {
+	switch {
+	case n >= 1<<30:
+		return fmt.Sprintf("%.1fG", float64(n)/float64(1<<30))
+	case n >= 1<<20:
+		return fmt.Sprintf("%.0fM", float64(n)/float64(1<<20))
+	}
+	return fmt.Sprintf("%dK", max(1, n>>10))
 }
 
 func sparkPart(s *series, minSpan int, withTrend bool) string {
@@ -591,6 +608,9 @@ func (m *model) artPanel() string {
 	}
 	if g.Ver != "" {
 		meta += dimSt.Render(" · v" + g.Ver)
+	}
+	if n, ok := m.sizes[g.Path]; ok {
+		meta += dimSt.Render(" · " + fmtSize(n))
 	}
 	parts := []string{
 		coverBoxSt.Render(cover),

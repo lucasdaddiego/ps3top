@@ -7,6 +7,8 @@ package ps3top
 import (
 	"context"
 	"fmt"
+	"path"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -271,6 +273,74 @@ func (m *model) quit() tea.Cmd {
 	return tea.Sequence(tea.Raw(deleteAllImages), tea.Quit)
 }
 
+// fetchSizes lists every ISO folder the library draws from — one idempotent
+// GET each, outside the gate, after a games load. The folders come from the
+// games' own paths, so a library spread over PS3ISO and PSXISO costs two
+// requests and one over a single folder costs one.
+func (m *model) fetchSizes() tea.Cmd {
+	seen := map[string]bool{}
+	var cmds []tea.Cmd
+	for _, g := range m.games {
+		folder := path.Dir(g.Path)
+		if g.Path == "" || folder == "/" || folder == "." || seen[folder] {
+			continue
+		}
+		seen[folder] = true
+		cli := m.cli
+		cmds = append(cmds, func() tea.Msg {
+			ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+			defer cancel()
+			sizes, err := cli.Sizes(ctx, folder)
+			return sizesMsg{folder, sizes, err}
+		})
+	}
+	return tea.Batch(cmds...)
+}
+
+// duplicateISOs names library files of identical size — two ISOs the same
+// to the byte are the same game twice — or "" when there are none.
+func (m *model) duplicateISOs() string {
+	bySize := map[int64][]string{}
+	for _, g := range m.games {
+		if n, ok := m.sizes[g.Path]; ok {
+			bySize[n] = append(bySize[n], path.Base(g.Path))
+		}
+	}
+	var pairs []string
+	for _, names := range bySize {
+		if len(names) > 1 {
+			sort.Strings(names)
+			pairs = append(pairs, strings.Join(names, " = "))
+		}
+	}
+	if len(pairs) == 0 {
+		return ""
+	}
+	sort.Strings(pairs)
+	return "same size, probably the same ISO twice: " + strings.Join(pairs, " · ")
+}
+
+// roomFor is how many more games the free space holds, judged by the
+// median size of the PS3 ISOs already there — the library's own idea of
+// what a game costs. 0 when there's nothing to judge by.
+func (m *model) roomFor() int {
+	if m.st.HDDFreeGB == unknown || m.st.HDDFreeGB <= 0 {
+		return 0
+	}
+	var sizes []int64
+	for _, g := range m.games {
+		if n, ok := m.sizes[g.Path]; ok && g.Console() == "PS3" {
+			sizes = append(sizes, n)
+		}
+	}
+	if len(sizes) == 0 {
+		return 0
+	}
+	sort.Slice(sizes, func(i, j int) bool { return sizes[i] < sizes[j] })
+	median := sizes[len(sizes)/2]
+	return int(m.st.HDDFreeGB * float64(1<<30) / float64(median))
+}
+
 // checkPatch asks Sony once per session whether the running title has a
 // newer patch than the version webMAN reports. Off the console's gate —
 // it's a request to the internet, not to the PS3 — and never repeated for
@@ -431,7 +501,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.applyFilter(m.filterQ)
 		m.reselect(prevSel, hadSel)
-		return m, m.ensureCover()
+		return m, tea.Batch(m.ensureCover(), m.fetchSizes())
 
 	case actionMsg:
 		m.actBusy = false
@@ -494,6 +564,20 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		ref.shown = true
 		m.covers[msg.icon] = ref
 		return m, m.ensureCover()
+
+	case sizesMsg:
+		if msg.err != nil {
+			return m, nil // sizes are a garnish; a folder that won't list just has none
+		}
+		for p, n := range msg.sizes {
+			m.sizes[p] = n
+		}
+		if dup := m.duplicateISOs(); dup != "" && !m.dupFlashed {
+			m.dupFlashed = true
+			m.flash = dup
+			return m, m.clearFlashLater()
+		}
+		return m, nil
 
 	case patchMsg:
 		if msg.err == nil {

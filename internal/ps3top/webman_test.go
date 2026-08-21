@@ -875,3 +875,33 @@ func TestSplitInfo(t *testing.T) {
 		}
 	}
 }
+
+// webMAN's folder listing hangs the exact byte size on each row's mount
+// link; only mountable rows carry one, so a stray text file in the folder
+// is skipped, and the key is the path webMAN mounts by — Game.Path — so
+// the join to the library is by identity. Captured 2026-08-21, synthetic
+// twin in testdata.
+func TestParseSizes(t *testing.T) {
+	b, err := os.ReadFile("testdata/dir_ps3iso.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := parseSizes(string(b))
+	want := map[string]int64{
+		"/dev_hdd0/PS3ISO/SampleGame2.iso":  10036969472,
+		"/dev_hdd0/PS3ISO/FixtureStorm.iso": 3735420928,
+		"/dev_hdd0/PS3ISO/Legacy.iso":       3735420928,
+		"/dev_hdd0/PS3ISO/Spaced Name.iso":  1104,
+	}
+	if len(got) != len(want) {
+		t.Errorf("parsed %d entries, want %d: %v", len(got), len(want), got)
+	}
+	for p, n := range want {
+		if got[p] != n {
+			t.Errorf("%s = %d, want %d", p, got[p], n)
+		}
+	}
+	if _, ok := got["/dev_hdd0/PS3ISO/Notes.txt"]; ok {
+		t.Error("a non-mountable row was taken for a game")
+	}
+}

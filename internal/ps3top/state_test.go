@@ -1075,3 +1075,75 @@ func TestSlowPollFillsTwoRingSlots(t *testing.T) {
 		t.Errorf("a slow-cadence outage filled %d slots total, want 5", n)
 	}
 }
+
+// A games load is followed by one listing per ISO folder the library draws
+// from; the sizes land beside the game in the art panel, the header judges
+// how many more games the free space holds, and two files of identical
+// size are called out once as the same ISO twice.
+func TestLibrarySizes(t *testing.T) {
+	listing, err := os.ReadFile("testdata/dir_ps3iso.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var folders []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		folders = append(folders, r.URL.Path)
+		w.Write(listing)
+	}))
+	defer srv.Close()
+
+	m := liveModel(t, 160)
+	m.cli = NewClient(strings.TrimPrefix(srv.URL, "http://"))
+	m.artOn = true
+	games := []Game{
+		{Title: "Sample Game™ 2", ID: "MOCK30982", Category: "hdd0/PS3ISO", Path: "/dev_hdd0/PS3ISO/SampleGame2.iso"},
+		{Title: "Fixture Storm™", ID: "MOCK98137", Category: "hdd0/PS3ISO", Path: "/dev_hdd0/PS3ISO/FixtureStorm.iso"},
+		{Title: "Legacy Title", ID: "MOCK00001", Category: "hdd0/PS3ISO", Path: "/dev_hdd0/PS3ISO/Legacy.iso"},
+		{Title: "Demo Quest", ID: "DEMO00474", Category: "hdd0/PSXISO", Path: "/dev_hdd0/PSXISO/DemoQuest.bin"},
+	}
+	_, cmd := m.Update(gamesMsg{games: games})
+	var replies []sizesMsg
+	for _, msg := range msgsOf(cmd) {
+		if s, ok := msg.(sizesMsg); ok {
+			replies = append(replies, s)
+		}
+	}
+	if len(replies) != 2 {
+		t.Fatalf("%d folder listings, want one each for PS3ISO and PSXISO (hit %v)", len(replies), folders)
+	}
+	for _, r := range replies {
+		m = exec(t, m, func() tea.Msg { return r })
+	}
+	if m.sizes["/dev_hdd0/PS3ISO/SampleGame2.iso"] != 10036969472 {
+		t.Errorf("sizes not merged: %v", m.sizes)
+	}
+	// the art panel carries the size next to the ID
+	m.cursor = 0
+	if panel := m.artPanel(); !strings.Contains(panel, "9.3G") {
+		t.Errorf("art panel has no size:\n%s", panel)
+	}
+	// the header judges room by the median PS3 ISO (3.5G here): 123.4G free
+	if n := m.roomFor(); n != 35 {
+		t.Errorf("roomFor = %d, want 35", n)
+	}
+	if !strings.Contains(m.header(), "~35 more") {
+		t.Errorf("header doesn't say how many more fit:\n%s", m.header())
+	}
+	// identical sizes are called out, once
+	if !strings.Contains(m.flash, "FixtureStorm.iso = Legacy.iso") {
+		t.Errorf("duplicate ISOs not flashed: %q", m.flash)
+	}
+	m.flash = ""
+	m = exec(t, m, func() tea.Msg { return replies[0] })
+	if m.flash != "" {
+		t.Errorf("duplicate flash repeated: %q", m.flash)
+	}
+}
+
+func TestFmtSize(t *testing.T) {
+	for n, want := range map[int64]string{10036969472: "9.3G", 677211360: "646M", 1104: "1K", 0: "1K"} {
+		if got := fmtSize(n); got != want {
+			t.Errorf("fmtSize(%d) = %q, want %q", n, got, want)
+		}
+	}
+}

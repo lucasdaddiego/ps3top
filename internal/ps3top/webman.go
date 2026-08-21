@@ -236,6 +236,36 @@ func (c *Client) Cover(ctx context.Context, iconPath string) ([]byte, error) {
 	return c.get(ctx, iconPath)
 }
 
+// Sizes lists the mountable files in one ISO folder with their exact byte
+// size, keyed by the path webMAN mounts them by — which is Game.Path, so
+// the join to the library is by identity.
+func (c *Client) Sizes(ctx context.Context, folder string) (map[string]int64, error) {
+	body, err := c.get(ctx, strings.TrimSuffix(folder, "/")+"/")
+	if err != nil {
+		return nil, err
+	}
+	return parseSizes(string(body)), nil
+}
+
+// webMAN's directory listing hangs the exact size on each row's mount link:
+//
+//	<a href="/mount.ps3/dev_hdd0/PS3ISO/Blur.iso" title="6,714,621,952 b">6,403 MB</a>
+//
+// Only mountable rows carry a /mount.ps3 href, which is the filter.
+var reSizeRow = regexp.MustCompile(`href="/mount\.ps3(/[^"]+)" title="([\d,]+) b"`)
+
+func parseSizes(html string) map[string]int64 {
+	out := map[string]int64{}
+	for _, m := range reSizeRow.FindAllStringSubmatch(html, -1) {
+		n, err := strconv.ParseInt(strings.ReplaceAll(m[2], ",", ""), 10, 64)
+		if err != nil || n <= 0 {
+			continue
+		}
+		out[sanitize(m[1])] = n
+	}
+	return out
+}
+
 func (c *Client) Mount(ctx context.Context, g Game) error { return c.fire(ctx, g.MountURL) }
 func (c *Client) Eject(ctx context.Context) error         { return c.fire(ctx, "/mount_ps3/unmount") }
 func (c *Client) Launch(ctx context.Context) error        { return c.fire(ctx, "/play.ps3") }

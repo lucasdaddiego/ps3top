@@ -49,6 +49,12 @@ type (
 		err  error
 	}
 	coverShownMsg struct{ icon string }
+	// sizesMsg is one ISO folder's listing, sizes keyed by mount path
+	sizesMsg struct {
+		folder string
+		sizes  map[string]int64
+		err    error
+	}
 	// patchMsg is Sony's answer about a title's newest patch version
 	patchMsg struct {
 		id, latest string
@@ -144,6 +150,10 @@ type model struct {
 	// patches is the newest patch version Sony lists per title ID, asked
 	// once per title per session when it's the running game ("" = none)
 	patches map[string]string
+	// sizes is each library file's exact byte size, keyed by Game.Path,
+	// from the ISO folders' listings after every games load
+	sizes      map[string]int64
+	dupFlashed bool // the duplicate-ISO flash fires once per session
 
 	hist       *history
 	sortRecent bool
@@ -201,6 +211,7 @@ func newModel(cli *Client, host string, interval time.Duration, alarm int, artOn
 		covers:      map[string]coverRef{},
 		coverFailed: map[string]bool{},
 		patches:     map[string]string{},
+		sizes:       map[string]int64{},
 	}
 	if m.hist == nil { // every read path dereferences it; an empty log is the no-op
 		m.hist = &history{stats: map[string]gameStat{}}

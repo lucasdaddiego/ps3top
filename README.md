@@ -325,6 +325,13 @@ skips the confirm.
   (`/refresh.ps3?xmb`, 30s timeout — a rescan walks every ISO directory) and
   reloads 1.5s after the reply, in case the XML is still being written when
   webMAN answers.
+- Library sizes: after every games load, one `GET /dev_hdd0/<folder>/` per
+  ISO folder the library draws from (two for a PS3ISO + PSXISO library).
+  webMAN's listing hangs the exact byte size on each row's mount link, keyed
+  by the path it mounts by — `Game.Path` — so the join is by identity. The
+  art panel gains `· 9.3G`, the header's HDD figure gains `~27 more` (free
+  space over the median PS3 ISO), and two files of identical size are flashed
+  once as probably the same ISO twice.
 - Covers follow the covers source on `/setup.ps3`: **ICON0.PNG** is the ISO's
   own 320×176 icon (`/dev_hdd0/tmp/wmtmp/`), **MM COVERS** is multiMAN's
   folder of 260×300 JPEGs (`/dev_hdd0/game/BLES80608/USRDIR/covers/`, filled
