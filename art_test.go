@@ -145,7 +145,7 @@ func TestArtBoxScalesWithTheTerminal(t *testing.T) {
 		{84, 20, artMinCols, 14},          // the art threshold: 20 cols left, floored at 24, 14 rows
 		{120, 23, 31, 18},                 // 56 cols left, 18 rows, width given back to 31
 		{128, 25, 35, 20},                 // a 128×32 window: 64 left, 20 rows, width back to 35
-		{200, 40, 61, 35},                 // wide and tall: 136 → 64 cols on offer, 35 rows, width back to 61
+		{200, 40, 61, 35},                 // wide and tall: 136 → 96 cols on offer, 35 rows, width back to 61
 		{300, 12, artMinCols, artMinRows}, // very wide but short: rows floored, and the width given back
 	} {
 		cols, rows := artBox(c.width, c.listH, 2, list)

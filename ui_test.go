@@ -549,3 +549,30 @@ func TestAPollInFlightDoesNotSwallowAnAction(t *testing.T) {
 		t.Error("tick during an action neither polled nor deferred")
 	}
 }
+
+// The selection highlight ends a space past the row's content. A wide window
+// hands the list every column the cover can't use, and a bar that ran to the
+// list's edge pointed at nothing — except in the no-art layout, where the
+// play column sits at that edge and the row has to reach it.
+func TestSelectionHighlightStopsAtTheContent(t *testing.T) {
+	m := liveModel(t, 200)
+	m.artOn = true
+	m.playColW = 0
+	sel := m.renderRow(m.order[0], true)
+	content := 2 + m.numW + 2 + clamp(m.titleColW, 10, m.listWidth()) + 1 + idColW
+	if got := lipgloss.Width(sel); got != content+1 {
+		t.Errorf("highlight is %d cols wide, want the %d of content plus one", got, content+1)
+	}
+	// the mounted mark extends it
+	m.games[0].Path = "/dev_hdd0/PS3ISO/SampleGame2.iso"
+	m.st.MountedISO = m.games[0].Path
+	if got := lipgloss.Width(m.renderRow(m.order[0], true)); got != content+lipgloss.Width(" ● mounted")+1 {
+		t.Errorf("mounted highlight is %d cols wide, want %d", got, content+lipgloss.Width(" ● mounted")+1)
+	}
+	// with the play column at the edge (no art), the row spans the list
+	m.artOn = false
+	m.playColW = 5
+	if got := lipgloss.Width(m.renderRow(m.order[0], true)); got != m.listWidth() {
+		t.Errorf("row with a play column is %d cols, want the list's %d", got, m.listWidth())
+	}
+}

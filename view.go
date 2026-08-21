@@ -495,7 +495,15 @@ func (m *model) renderRow(gi int, sel bool) string {
 	if mark != "" {
 		b.WriteString(st.ok.Render(mark))
 	}
-	if pad := w - lipgloss.Width(b.String()) - lipgloss.Width(played); pad > 0 {
+	// the highlight runs a space past the content, not to the list's edge —
+	// a wide window hands the list every column the cover can't use, and a
+	// selection bar that long points at nothing. The play column is the
+	// exception: it sits at the edge, so the row has to reach it.
+	end := min(w, lipgloss.Width(b.String())+1)
+	if played != "" {
+		end = w
+	}
+	if pad := end - lipgloss.Width(b.String()) - lipgloss.Width(played); pad > 0 {
 		b.WriteString(st.main.Render(strings.Repeat(" ", pad)))
 	}
 	if played != "" {

@@ -324,7 +324,7 @@ skips the confirm.
   at its own aspect inside the art box rather than stretched to it, since
   kitty scales an image to exactly the cells it's given — a portrait cover
   stays portrait. The box takes every column the list doesn't need for
-  its widest row (24–64 columns) and as many rows as the three text lines
+  its widest row (24–96 columns) and as many rows as the three text lines
   under it leave and the placement
   is shaped at the terminal's *measured* cell aspect (`TIOCGWINSZ` pixel
   fields; kitty and Ghostty fill them in, 1:2 assumed otherwise) — the
