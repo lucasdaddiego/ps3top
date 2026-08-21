@@ -69,13 +69,7 @@ func (m *model) frame() string {
 	} else {
 		body = m.renderList()
 		if m.artShown() {
-			// the panel sits centered in the list's height rather than
-			// hanging from the top with the slack all underneath
-			panel := m.artPanel()
-			if top := (m.listH - lipgloss.Height(panel)) / 2; top > 0 {
-				panel = strings.Repeat("\n", top) + panel
-			}
-			body = lipgloss.JoinHorizontal(lipgloss.Top, body, "  ", panel)
+			body = m.withArtPanel(body)
 		}
 	}
 	body = lipgloss.NewStyle().Height(m.listH).MaxHeight(m.listH).Render(body)
@@ -510,6 +504,30 @@ func (m *model) renderRow(gi int, sel bool) string {
 		b.WriteString(st.dim.Render(played))
 	}
 	return b.String()
+}
+
+// withArtPanel sets the art panel beside the list, centered in whatever the
+// list's content leaves: vertically in the list's height, horizontally in
+// the columns between the widest row and the right edge. The rows stop at
+// their content (so the list block is as wide as its longest row), and the
+// cover is capped by the terminal's height, so on a wide window there is
+// slack — a panel hugging either side of it reads as misplaced, a centered
+// one as framed.
+func (m *model) withArtPanel(list string) string {
+	panel := m.artPanel()
+	if top := (m.listH - lipgloss.Height(panel)) / 2; top > 0 {
+		panel = strings.Repeat("\n", top) + panel
+	}
+	cols, _ := m.artBox()
+	// the panel's width by construction — never measured, since its
+	// placeholder cells are not something to ask a width function about
+	left := max(2, (m.width-lipgloss.Width(list)-(cols+2))/2)
+	lines := strings.Split(panel, "\n")
+	pad := strings.Repeat(" ", left)
+	for i, l := range lines {
+		lines[i] = pad + l
+	}
+	return lipgloss.JoinHorizontal(lipgloss.Top, list, strings.Join(lines, "\n"))
 }
 
 func (m *model) artPanel() string {

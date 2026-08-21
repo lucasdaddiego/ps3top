@@ -576,3 +576,40 @@ func TestSelectionHighlightStopsAtTheContent(t *testing.T) {
 		t.Errorf("row with a play column is %d cols, want the list's %d", got, m.listWidth())
 	}
 }
+
+// The art panel is centered in the slack between the list's content and the
+// right edge, not pushed against either: the cover's height caps its width,
+// so a wide window always has columns left over somewhere.
+func TestArtPanelIsCenteredInTheSlack(t *testing.T) {
+	m := liveModel(t, 200)
+	m.artOn = true
+	cols, _ := m.artBox()
+	list := m.renderList()
+	body := m.withArtPanel(list)
+	lines := strings.Split(body, "\n")
+	// find the box's top border and where it starts
+	var boxLine string
+	for _, l := range lines {
+		if strings.Contains(l, "╭") {
+			boxLine = l
+			break
+		}
+	}
+	if boxLine == "" {
+		t.Fatal("no art box in the body")
+	}
+	start := lipgloss.Width(boxLine[:strings.Index(boxLine, "╭")])
+	listW := lipgloss.Width(list)
+	leftGap := start - listW
+	rightGap := m.width - start - (cols + 2)
+	if leftGap < 2 || rightGap < 0 || abs(leftGap-rightGap) > 2 {
+		t.Errorf("panel at col %d: %d cols left of it, %d right, want them balanced (list %d, box %d)", start, leftGap, rightGap, listW, cols+2)
+	}
+}
+
+func abs(n int) int {
+	if n < 0 {
+		return -n
+	}
+	return n
+}
