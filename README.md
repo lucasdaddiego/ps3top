@@ -26,13 +26,15 @@ values render green; the active console tab is highlighted in the brand blue.
 ## Install / run
 
 ```sh
-go install github.com/lucasdaddiego/ps3top@latest   # → ~/go/bin/ps3top
+go install github.com/lucasdaddiego/ps3top@latest              # → ~/go/bin/ps3top
+go install github.com/lucasdaddiego/ps3top/cmd/binmerge@latest # → ~/go/bin/binmerge
 ps3top              # auto-discovers the console
 ```
 
-From a clone: `make install` puts a stripped release build in `~/.bin`,
-`make build` a stamped one in `bin/` (gitignored); `make` lists the other
-targets (run, test, lint, tidy, clean).
+Two binaries: `ps3top`, the TUI, and [`binmerge`](#binmerge), a CLI that preps
+PS1 rips for the PSX tab. From a clone: `make install` puts stripped release
+builds of both in `~/.bin`, `make build` stamped ones in `bin/` (gitignored);
+`make` lists the other targets (run, test, lint, tidy, clean).
 
 Flags: `--host` (default: auto-discover; env `PS3TOP_HOST`) · `--interval`
 (15s, min 5s) · `--alarm` (80°C) · `--no-art` · `--version`. It's a TUI and
@@ -419,10 +421,71 @@ placeholder, its diacritics and the `38;5;id` foreground come out the other
 side intact, since the cell renderer re-encodes everything it draws.
 Unsupported terminal or `--no-art` → text-only, no errors.
 
+## binmerge
+
+A separate binary in this repo, because ps3top is a TUI and nothing else and
+this is a batch job. It merges a cue sheet's bin files into a single bin and
+writes a new cue with corrected offsets; `--split` reverses it.
+
+That's the prep step the PSX tab needs. Redump dumps a multi-track PS1 disc as
+one bin per track, and the PS3's PS1 emulator mounts one bin per disc — so a
+freshly downloaded rip is a set webMAN will list and fail to boot. Merge it,
+copy the pair to `/dev_hdd0/PSXISO/`, mount it from the PSX tab:
+
+```sh
+# a Redump rip: Game.cue + "Game (Track 1..N).bin"
+binmerge Game.cue Game --psx -o ~/psx/out
+# → out/Game.bin + out/Game.cue, ready for /dev_hdd0/PSXISO/
+```
+
+`--psx` is checks, not magic — the merge is byte-identical without it. It
+refuses `--split` (a split set is a multi-file cue, the one thing the emulator
+can't mount), warns when the sector size isn't 2352 (a cooked rip won't boot)
+or when the basename carries `#`, `?` or `%` (webMAN mounts by URL path), and
+prints the filenames to copy. Everything else about the tool is
+console-agnostic and works on any cue.
+
+Flags: `-s/--split` · `-o/--outdir` · `-f/--force` · `-n/--dry-run` · `--psx` ·
+`-v/--verbose` · `-V/--version`. Positionals and flags interleave in either
+order. `-n` validates and prints the cue it *would* write to stdout, touching
+nothing — not even the output directory.
+
+What it protects, since a merge reads the only copy of someone's disc:
+
+- **inputs are never overwritten, `--force` included.** Paths aren't identity —
+  a hardlink, or a case-only difference on the case-insensitive filesystem
+  macOS ships by default, names the same inode under a name that compares
+  unequal — so inodes are compared too, and the comparison happens against the
+  resolved path (a `../NAME` basename only aliases an input once `..` is
+  collapsed, and the output directory it escapes may not exist yet).
+- **two outputs never land on one path.** Track filenames come from track
+  numbers, so a cue repeating one would write the same file twice, lose the
+  first track's sectors, and report success.
+- **nothing partial survives a failure.** A merge or split that dies halfway —
+  Ctrl-C included, which the copy loops watch for rather than leaving to the
+  process — removes what it had written. A half-merged bin is the right length
+  to look plausible and the wrong bytes to boot.
+- **metadata is carried through.** `FLAGS`, `PREGAP`, `POSTGAP`, `ISRC`,
+  `CATALOG`, disc and track `TITLE`/`PERFORMER`, `REM` — every line the parser
+  doesn't act on comes out where it went in, on the right side of the indexes.
+  The regexes are anchored, so a keyword inside a `REM` stays a comment.
+- **non-UTF-8 cues decode as cp1252, not latin-1.** The rewritten cue goes out
+  as UTF-8, so a wrong decode is permanent: 0x92 is a right single quote in a
+  Windows-made cue, and latin-1 would bake a C1 control character into the
+  title.
+
+It descends from a Python tool of the same name (2.1.0, the version `-V` still
+reports) that lived in its own repo until 2026-08-24; the Go port passes that
+tool's full black-box suite unchanged.
+
 ## Source layout
 
 `main.go` at the root is ten lines — the build stamp handed into
-`ps3top.Run` — so `go install …/ps3top@latest` keeps working. The program is
+`ps3top.Run` — so `go install …/ps3top@latest` keeps working. `cmd/binmerge`
+is the same shape for the other binary: flags and exit codes, with the work in
+`internal/binmerge` (`cue.go` parse + generation, `validate.go` the sector and
+output guards, `merge.go` the copying and its cleanup, `run.go` the
+orchestration). The TUI is
 `internal/ps3top`, one flat package deliberately: the tests live in-package
 and exercise internals directly, and a split by concern would churn five
 thousand lines of tests for nothing. The files carve it by concern instead
@@ -446,13 +509,33 @@ thousand lines of tests for nothing. The files carve it by concern instead
 | `thermallog.go` | the per-minute thermal log and its weekly fold |
 | `art.go` / `cover.go` | kitty-graphics plumbing / cover fetch + cache |
 
+And beside it, the annexed tool:
+
+| file | owns |
+|---|---|
+| `cmd/binmerge/main.go` | flags, the positional/flag interleave, exit codes |
+| `internal/binmerge/cue.go` | decode, parse, timestamps, both cue generators |
+| `internal/binmerge/validate.go` | sector size, bin sizes, index bounds, output guards |
+| `internal/binmerge/merge.go` | the copying, and the cleanup after a failed one |
+| `internal/binmerge/run.go` | `Options`/`Run`, the logger, the `--psx` checks |
+
 Each `*_test.go` matches its file, plus `state_test.go`/`edges_test.go` for
 model transitions and end-to-end key→wire paths, and `ui_test.go` for whole
 frames.
 
 ## Tests
 
-`go test` runs the parsers against the fixtures in `internal/ps3top/testdata/` (in-game
+`go test ./...` covers both binaries. binmerge's suite needs no fixtures on
+disk — it builds a three-track Redump set in a temp dir per test — and pins the
+round trip (merge then split gives back byte-identical bins and the original
+cue), the metadata passthrough, every fatal path and the message it prints,
+and the three output guards, including the hardlink and case-only aliases that
+`--force` must still refuse. The port was landed against the Python original's
+black-box suite driving the Go binary, which passed unchanged before a line of
+Go test was written; that suite lives on in `internal/binmerge/*_test.go`.
+
+The rest of this section is ps3top's own. `go test` runs the parsers against
+the fixtures in `internal/ps3top/testdata/` (in-game
 `cpursx.ps3`, `mygames.xml` with the game-ID-in-title setting on, and
 `mygames_info_ids.xml` with it off plus MM COVERS). The fixtures are **synthetic**: byte-faithful to
 real webMAN (sMAN skin) output in structure, but every game title, title ID,

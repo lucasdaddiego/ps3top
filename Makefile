@@ -2,10 +2,13 @@
 # Run `make` (or `make help`) to list targets.
 
 BINARY      := ps3top
+TOOL        := binmerge
 BIN_DIR     := bin
 INSTALL_DIR := $(HOME)/.bin
 
-# Version metadata, stamped in at link time. A plain `go build` / `go run .`
+# Version metadata, stamped in at link time — both binaries take the same one
+# (cmd/binmerge is package main too, so -X main.version reaches it unchanged),
+# and binmerge keeps its own tool version alongside it in the source. A plain `go build` / `go run .`
 # leaves the defaults ("dev"), which is the honest answer — the source moves on
 # between tags, and a --version that names a release the code has passed sends
 # bug reports chasing the wrong revision.
@@ -23,9 +26,10 @@ RELEASE := -trimpath -ldflags "-s -w $(STAMP)"
 help: ## List the targets (the default goal)
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-8s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-build: ## Compile the binary into bin/ps3top
+build: ## Compile both binaries into bin/
 	@mkdir -p $(BIN_DIR)
 	go build -ldflags "$(STAMP)" -o $(BIN_DIR)/$(BINARY) .
+	go build -ldflags "$(STAMP)" -o $(BIN_DIR)/$(TOOL) ./cmd/$(TOOL)
 
 run: ## Launch the TUI (auto-discovers the console)
 	go run .
@@ -43,10 +47,11 @@ tidy: ## Update dependencies to their latest minor/patch and tidy go.mod
 	go get -u ./...
 	go mod tidy
 
-install: ## Install a stripped release binary into ~/.bin
+install: ## Install stripped release binaries into ~/.bin
 	@mkdir -p $(INSTALL_DIR)
 	go build $(RELEASE) -o "$(INSTALL_DIR)/$(BINARY)" .
-	@echo "installed $(INSTALL_DIR)/$(BINARY)"
+	go build $(RELEASE) -o "$(INSTALL_DIR)/$(TOOL)" ./cmd/$(TOOL)
+	@echo "installed $(INSTALL_DIR)/$(BINARY) and $(INSTALL_DIR)/$(TOOL)"
 
 clean: ## Remove the local build directory
 	rm -rf $(BIN_DIR)
