@@ -77,7 +77,7 @@ type Game struct {
 	ID       string // "MOCK30982"
 	Ver      string // "01.15" — the installed version, when webMAN lists it
 	Path     string // "/dev_hdd0/PS3ISO/SampleGame2.iso"
-	MountURL string // "/mount_ps3/dev_hdd0/PS3ISO/SampleGame2.iso"
+	MountURL string // "/mount_ps3/dev_hdd0/PS3ISO/SampleGame2.iso" (see mountPath)
 	IconPath string // "/dev_hdd0/tmp/wmtmp/SampleGame2.PNG"
 	Category string // "hdd0/PS3ISO"
 }
@@ -142,12 +142,30 @@ func normalizeHost(h string) (string, error) {
 	if u.Hostname() == "" {
 		return "", fmt.Errorf("bad host %q", h)
 	}
+	// A dotted-quad typo — 192.168.0.450, or a dropped octet — is not something
+	// url.Parse objects to: it takes it for a DNS name. Nothing resolves it, so
+	// the mistake surfaces later and once per action ("no such host" on a
+	// mount), reading like the console fell off the network rather than like an
+	// address that was never valid. An all-numeric name can only ever have been
+	// meant as an IP, so hold it to that here, before anything is sent.
+	if hn := u.Hostname(); isNumericDotted(hn) && net.ParseIP(hn) == nil {
+		return "", fmt.Errorf("bad IPv4 address %q: four parts, each 0-255", hn)
+	}
 	if p := u.Port(); p != "" {
 		if n, err := strconv.Atoi(p); err != nil || n < 1 || n > 65535 {
 			return "", fmt.Errorf("bad port in %q", h)
 		}
 	}
 	return u.Host, nil
+}
+
+// isNumericDotted reports whether s is built only from digits and dots — the
+// shape of an IPv4 address, and a shape no hostname is allowed to have.
+func isNumericDotted(s string) bool {
+	if s == "" {
+		return false
+	}
+	return strings.IndexFunc(s, func(r rune) bool { return r != '.' && (r < '0' || r > '9') }) < 0
 }
 
 func NewClient(host string) *Client {
@@ -180,6 +198,16 @@ func NewClient(host string) *Client {
 }
 
 func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
+	// The URL is base+path, which makes the leading slash load-bearing: paths
+	// that come off the network (a mount action, an icon, an ISO folder) would
+	// otherwise run into the authority instead of the path — "0/mount_ps3/..."
+	// turned a console at 192.168.0.45 into a request for 192.168.0.450 — and
+	// a "//host/..." would hand the request to whatever that names. Neither is
+	// a request worth sending, so they fail here as ours rather than there as
+	// the console's.
+	if !strings.HasPrefix(path, "/") || strings.HasPrefix(path, "//") {
+		return nil, fmt.Errorf("bad request path %q", path)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+path, nil)
 	if err != nil {
 		return nil, err
@@ -513,6 +541,41 @@ func splitInfo(info string) (category, id, ver string) {
 	return category, id, ver
 }
 
+// mountPath is the request path out of a module_action, and the reason it
+// can't just be the field. webMAN 1.47.48q wrote the action bare —
+// "/mount_ps3/dev_hdd0/PS3ISO/x.iso" — and 1.47.48s prefixes it with a
+// webrender argument: "0/mount_ps3/...". That leading digit has no slash in
+// front of it, so base+path glues it onto the address instead of the path: a
+// console at 192.168.0.45 gets asked for 192.168.0.450, every mount dies in
+// DNS ("no such host"), and the address on screen is the right one — it reads
+// as a typo you didn't make. The same missing slash also left Game.Path
+// carrying the prefix, which silently broke everything keyed by it: the
+// mounted-ISO match, /play.ps3, and the size join.
+//
+// So anchor on the endpoint, and hand back a plain absolute path or nothing.
+// "//host/..." is refused rather than trimmed: it would aim a mount — or the
+// shutdown next to it — at whatever machine that names, from a field we read
+// off the network.
+func mountPath(s string) string {
+	if i := strings.Index(s, "/mount"); i > 0 {
+		s = s[i:]
+	} else if i := strings.Index(s, "/"); i > 0 && isDigits(s[:i]) {
+		// same prefix, in front of an endpoint this build doesn't know by
+		// name. Only a numeric one is cut: that's the shape webMAN writes,
+		// and anything else is a value we don't understand rather than a
+		// path with a known bit of junk on the front.
+		s = s[i:]
+	}
+	if !strings.HasPrefix(s, "/") || strings.HasPrefix(s, "//") {
+		return ""
+	}
+	return s
+}
+
+func isDigits(s string) bool {
+	return s != "" && strings.IndexFunc(s, func(r rune) bool { return r < '0' || r > '9' }) < 0
+}
+
 func parseGames(xml string) []Game {
 	var games []Game
 	for _, e := range reEntry.FindAllStringSubmatch(xml, -1) {
@@ -527,7 +590,7 @@ func parseGames(xml string) []Game {
 				// the two halves of the name would be glued together
 				g.Title = sanitize(strings.Join(strings.Fields(f[2]), " "))
 			case "module_action":
-				g.MountURL = sanitize(f[2])
+				g.MountURL = mountPath(sanitize(f[2]))
 			case "info":
 				g.Category, g.ID, g.Ver = splitInfo(sanitize(f[2]))
 			}

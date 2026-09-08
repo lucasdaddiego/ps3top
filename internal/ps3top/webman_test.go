@@ -539,6 +539,74 @@ func TestRemoteTextIsStrippedOfControlSequences(t *testing.T) {
 	}
 }
 
+// webMAN 1.47.48q wrote module_action as a bare path; 1.47.48s prefixes it
+// with a webrender argument ("0/mount_ps3/..."). With no slash in front of it
+// that digit joined the ADDRESS, not the path — a console at 192.168.0.45 was
+// asked for 192.168.0.450, every mount died in DNS as "no such host", and the
+// header still showed the address you actually typed. The same missing slash
+// left Game.Path carrying the prefix, so the mounted-ISO match, /play.ps3 and
+// the size join all quietly stopped agreeing with the console.
+func TestMountActionPrefixIsNotGluedOntoTheHost(t *testing.T) {
+	b, err := os.ReadFile("testdata/mygames_prefixed.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	games := parseGames(string(b))
+	if len(games) != 3 {
+		t.Fatalf("len(games) = %d, want 3", len(games))
+	}
+	for _, g := range games {
+		if !strings.HasPrefix(g.MountURL, "/mount_ps3/") {
+			t.Errorf("%q: MountURL = %q", g.Title, g.MountURL)
+		}
+		if !strings.HasPrefix(g.Path, "/dev_hdd0/") {
+			t.Errorf("%q: Path = %q", g.Title, g.Path)
+		}
+	}
+
+	both := map[string]string{
+		"/mount_ps3/dev_hdd0/PS3ISO/x.iso":  "/mount_ps3/dev_hdd0/PS3ISO/x.iso", // 1.47.48q
+		"0/mount_ps3/dev_hdd0/PS3ISO/x.iso": "/mount_ps3/dev_hdd0/PS3ISO/x.iso", // 1.47.48s
+		"12/mount_ps3/dev_hdd0/GAMES/G":     "/mount_ps3/dev_hdd0/GAMES/G",
+		"0/some_future_endpoint/x":          "/some_future_endpoint/x",
+		// a value naming a host is retargeted at the console we were pointed
+		// at, never followed: it was read off an unauthenticated LAN page, and
+		// the next thing sent down that path is a mount, an eject or a
+		// shutdown. What can't be salvaged as a path is dropped instead.
+		"http://192.168.1.9/mount_ps3/x": "/mount_ps3/x",
+		"//192.168.1.9/mount_ps3/x":      "/mount_ps3/x",
+		"//evil/x":                       "",
+		"mount_ps3/x":                    "",
+		"":                               "",
+	}
+	for in, want := range both {
+		if got := mountPath(in); got != want {
+			t.Errorf("mountPath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// …and the same invariant at the other end, so no path from any source can
+// bleed into the authority even if a future webMAN invents a new shape.
+func TestGetRefusesPathsThatWouldChangeTheHost(t *testing.T) {
+	var hits int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		w.Write([]byte("webMAN"))
+	}))
+	defer srv.Close()
+
+	cli := NewClient(strings.TrimPrefix(srv.URL, "http://"))
+	for _, path := range []string{"0/mount_ps3/x", "//example.com/mount_ps3/x", ""} {
+		if _, err := cli.get(context.Background(), path); err == nil {
+			t.Errorf("get(%q) was sent", path)
+		}
+	}
+	if hits != 0 {
+		t.Errorf("%d request(s) left the client", hits)
+	}
+}
+
 // --- host handling ---
 
 // webMAN is addressed as host[:port]. A value carrying a path silently
@@ -576,6 +644,11 @@ func TestNormalizeHost(t *testing.T) {
 		"127.0.0.1:notaport",
 		"127.0.0.1:99999",
 		"has space",
+		"192.168.0.450",    // the typo that used to reach DNS as a hostname
+		"192.168.0.450:80", // …and the same with an explicit port
+		"192.168.0",        // a dropped octet
+		"192.168.0.4.50",   // a stray one
+		"999.999.999.999",
 	}
 	for _, in := range bad {
 		if got, err := normalizeHost(in); err == nil {
