@@ -16,6 +16,33 @@ import (
 // and use two 4-char "pools" (MOCK/DEMO) so the franchise-ID sort hint has
 // both a same-pool and a cross-pool case to chew on.
 
+// A Lite build renders the firmware line differently: no NOR/NAND prefix and
+// "FW:" instead of "Firmware:". Everything else in cpursx_lite.html is
+// inherited from cpursx_xmb.html, so a failure here is that line and nothing
+// else. Regression: reFW silently returned "" against a Lite console, which
+// only showed up as a missing corner readout.
+func TestParseStatusLiteEdition(t *testing.T) {
+	b, err := os.ReadFile("testdata/cpursx_lite.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := parseStatus(string(b))
+
+	if s.Firmware != "4.93 CEX PS3HEN 3.5.0" {
+		t.Errorf("Firmware = %q", s.Firmware)
+	}
+	// the rest must survive the edition change untouched
+	if s.CPUTemp == 0 || s.RSXTemp == 0 {
+		t.Errorf("temps = %d/%d", s.CPUTemp, s.RSXTemp)
+	}
+	if s.WMVersion == "" {
+		t.Error("WMVersion not parsed")
+	}
+	if s.Uptime == "" {
+		t.Error("Uptime not parsed")
+	}
+}
+
 func TestParseStatusInGame(t *testing.T) {
 	b, err := os.ReadFile("testdata/cpursx_ingame.html")
 	if err != nil {

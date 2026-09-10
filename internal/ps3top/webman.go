@@ -356,7 +356,10 @@ var (
 	reGameName = regexp.MustCompile(`google\.com/search\?q=[^"]*">([^<]+)</a>`)
 	rePID      = regexp.MustCompile(`>pid=[0-9A-Fa-fx]+<`)
 	reMounted  = regexp.MustCompile(`href="/mount\.ps3(/[^"]+)"`)
-	reFW       = regexp.MustCompile(`Firmware:\s*([^<]+?)\s*<`)
+	// LITE_EDITION builds abbreviate the label to "FW:" and, with
+	// SPOOF_CONSOLEID compiled out, drop the "NOR "/"NAND " prefix that
+	// precedes it on a full build. Accept both spellings.
+	reFW       = regexp.MustCompile(`(?:Firmware|FW):\s*([^<]+?)\s*<`)
 	reWM       = regexp.MustCompile(`webMAN\s+([\w.]+)\s+MOD`)
 	reLifetime = regexp.MustCompile(`power\.png[^>]*>\s*([^<]+?)\s*</H1>`)
 	// the dot is required: a bare trailing digit is part of the title
