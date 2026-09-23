@@ -46,6 +46,7 @@ type Status struct {
 	MountedISO string // "/dev_hdd0/PS3ISO/SampleGame2.iso", "" if nothing mounted
 	Firmware   string // "4.93 CEX PS3HEN 3.5.0"
 	WMVersion  string // "1.47.48q"
+	Lite       bool   // a LITE_EDITION build: no /play.ps3<path>, no pid on this page
 	LifeDays   int    // 218 — total powered-on days (syscon counter)
 	Boots      int    // 2709 — power-on count
 	HardOffs   int    // 65 — power-ons minus clean power-offs = unclean shutdowns
@@ -359,8 +360,11 @@ var (
 	// LITE_EDITION builds abbreviate the label to "FW:" and, with
 	// SPOOF_CONSOLEID compiled out, drop the "NOR "/"NAND " prefix that
 	// precedes it on a full build. Accept both spellings.
-	reFW       = regexp.MustCompile(`(?:Firmware|FW):\s*([^<]+?)\s*<`)
-	reWM       = regexp.MustCompile(`webMAN\s+([\w.]+)\s+MOD`)
+	reFW = regexp.MustCompile(`(?:Firmware|FW):\s*([^<]+?)\s*<`)
+	reWM = regexp.MustCompile(`webMAN\s+([\w.]+)\s+MOD`)
+	// the build's edition rides on the same line: "webMAN 1.47.48s MOD -
+	// Simple Web Server [Lite]", "… (NTFS) [Full]"
+	reLite     = regexp.MustCompile(`webMAN\s+[\w.]+\s+MOD[^<\[]*\[Lite\]`)
 	reLifetime = regexp.MustCompile(`power\.png[^>]*>\s*([^<]+?)\s*</H1>`)
 	// the dot is required: a bare trailing digit is part of the title
 	// ("MOCK PLANET 2"), only "NN.NN" is an APP_VER suffix
@@ -383,7 +387,13 @@ func parseStatus(html string) Status {
 	s.MemFreeKB = matchInt(reMem, html)
 	s.HDDFreeGB = matchFloat(reHDD, html)
 	s.PlaySecs = clockSecs(s.PlayTime)
-	s.InGame = rePID.MatchString(html)
+	s.Lite = reLite.MatchString(html)
+	// The pid link is the plain in-game marker, but it only exists in a build
+	// with PS3MAPI, and a Lite build has none — there InGame read false with a
+	// game up, and every guard keyed on it (the red confirm on mount and
+	// eject, x/X) stood down mid-game. The title-ID link and the play clock
+	// are the page's other in-game-only output, in every edition.
+	s.InGame = rePID.MatchString(html) || s.GameID != "" || s.PlayTime != ""
 
 	// ?mode cycles three states, and each renders that one slot differently —
 	// so the mode is read from which marker is present, including neither:

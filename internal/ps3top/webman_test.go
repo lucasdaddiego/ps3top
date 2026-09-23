@@ -18,9 +18,10 @@ import (
 
 // A Lite build renders the firmware line differently: no NOR/NAND prefix and
 // "FW:" instead of "Firmware:". Everything else in cpursx_lite.html is
-// inherited from cpursx_xmb.html, so a failure here is that line and nothing
-// else. Regression: reFW silently returned "" against a Lite console, which
-// only showed up as a missing corner readout.
+// inherited from cpursx_xmb.html but the edition tag on the version line, so
+// a failure here is one of those two lines and nothing else. Regression: reFW
+// silently returned "" against a Lite console, which only showed up as a
+// missing corner readout.
 func TestParseStatusLiteEdition(t *testing.T) {
 	b, err := os.ReadFile("testdata/cpursx_lite.html")
 	if err != nil {
@@ -40,6 +41,36 @@ func TestParseStatusLiteEdition(t *testing.T) {
 	}
 	if s.Uptime == "" {
 		t.Error("Uptime not parsed")
+	}
+}
+
+// A Lite build says so on the status page, and prints no pid link: the
+// running game shows there only as its title-ID link and the play clock.
+func TestParseStatusEditionAndLiteInGame(t *testing.T) {
+	read := func(name string) string {
+		b, err := os.ReadFile("testdata/" + name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(b)
+	}
+	if !parseStatus(read("cpursx_lite.html")).Lite {
+		t.Error("Lite page not read as Lite")
+	}
+	if parseStatus(read("cpursx_xmb.html")).Lite {
+		t.Error("Full page read as Lite")
+	}
+
+	ingame := read("cpursx_ingame.html")
+	const pid = `<a href="/gameplugin.ps3mapi?proc=0x1010200"><small>pid=01010200</small></a>`
+	if !strings.Contains(ingame, pid) {
+		t.Fatal("fixture lost its pid link")
+	}
+	if s := parseStatus(strings.Replace(ingame, pid, "", 1)); !s.InGame || s.GameID != "MOCK30982" {
+		t.Errorf("no pid link: InGame=%v GameID=%q, want a running game", s.InGame, s.GameID)
+	}
+	if parseStatus(read("cpursx_xmb.html")).InGame {
+		t.Error("XMB page read as in-game")
 	}
 }
 
