@@ -8,12 +8,14 @@ package ps3top
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
 	"sort"
 	"strconv"
@@ -80,8 +82,22 @@ type Game struct {
 	Path     string // "/dev_hdd0/PS3ISO/SampleGame2.iso"
 	MountURL string // "/mount_ps3/dev_hdd0/PS3ISO/SampleGame2.iso" (see mountPath)
 	IconPath string // "/dev_hdd0/tmp/wmtmp/SampleGame2.PNG"
+	AltIcon  string // the cover to try once IconPath has failed ("" = none)
 	Category string // "hdd0/PS3ISO"
 }
+
+// Where a PKG installs a game, and the category ps3top files it under —
+// webMAN's categories name the folder a title was found in, and this is that
+// folder.
+const (
+	hddGameDir        = "/dev_hdd0/game"
+	installedCategory = "hdd0/game"
+)
+
+// Installed reports whether g lives in /dev_hdd0/game rather than in an image
+// webMAN mounts: it has no file of its own to size, and it starts from the
+// app_home icon instead of the disc one.
+func (g Game) Installed() bool { return g.Category == installedCategory }
 
 // consoleOrder is chronological — release order, oldest first.
 var consoleOrder = []string{"PSX", "PS2", "PSP", "PS3"}
@@ -295,12 +311,190 @@ func parseSizes(html string) map[string]int64 {
 	return out
 }
 
+// InstalledGames lists the games a PKG installed to /dev_hdd0/game — PSN
+// titles like Crysis, which never reach mygames.xml: webMAN writes that file
+// from the image folders it scans (PS3ISO, GAMES, …), and this isn't one.
+//
+// The folder names are title IDs, but most folders there are not games: a
+// disc game's patch and data installs live there too, under the disc's own
+// ID. So a folder the library already names is taken for that and skipped
+// unread, and each one left costs a PARAM.SFO read — one at a time, for
+// webMAN's few session slots — kept only if its CATEGORY is HG, a game
+// installed to the HDD. Homebrew installs the same way, but under IDs that
+// aren't Sony's shape (NP0APOLLO), which is what keeps it out.
+//
+// A failure part-way returns what was read so far with the error, so a slow
+// console costs the tail of the list rather than all of it.
+func (c *Client) InstalledGames(ctx context.Context, lib []Game) ([]Game, error) {
+	body, err := c.get(ctx, hddGameDir+"/")
+	if err != nil {
+		return nil, err
+	}
+	have := map[string]bool{}
+	for _, g := range lib {
+		have[g.ID] = true
+	}
+	covers := coversDir(lib)
+	var out []Game
+	for _, folder := range parseGameDirs(string(body)) {
+		if have[folder] {
+			continue
+		}
+		b, err := c.get(ctx, hddGameDir+"/"+folder+"/PARAM.SFO")
+		if err != nil {
+			if ctx.Err() != nil {
+				return out, err
+			}
+			continue // no PARAM.SFO is no title
+		}
+		sfo, err := parseSFO(b)
+		if err != nil {
+			continue
+		}
+		if g, ok := installedGame(folder, sfo, covers); ok {
+			out = append(out, g)
+		}
+	}
+	return out, nil
+}
+
+// The /dev_hdd0/game listing hangs a mount link on every folder row, the way
+// the ISO folders hang one on every file:
+//
+//	<a href="/mount.ps3/dev_hdd0/game/NPEB00575">&lt;dir></a>
+//
+// Only a Sony-shaped ID is taken — four letters, five digits — which leaves
+// out homebrew (NP0APOLLO, GMPADTEST) and the "_install" and "GAMEDATA"
+// side folders some discs write.
+var reGameDir = regexp.MustCompile(`href="/mount\.ps3` + hddGameDir + `/([A-Z]{4}\d{5})"`)
+
+func parseGameDirs(html string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, m := range reGameDir.FindAllStringSubmatch(html, -1) {
+		if !seen[m[1]] {
+			seen[m[1]] = true
+			out = append(out, m[1])
+		}
+	}
+	return out
+}
+
+var (
+	reSonyID = regexp.MustCompile(`^[A-Z]{4}\d{5}$`)
+	reAppVer = regexp.MustCompile(`^\d+\.\d+$`)
+)
+
+// installedGame builds the library entry for one /dev_hdd0/game folder from
+// its PARAM.SFO, or reports false for a folder that isn't an installed game.
+// Its cover is the multiMAN one when the library's icons come from there, so
+// it matches every other row, with the folder's own ICON0 behind it — a PSN
+// title is the kind a cover pack is likely to lack.
+func installedGame(folder string, sfo map[string]string, covers string) (Game, bool) {
+	if sfo["CATEGORY"] != "HG" {
+		return Game{}, false
+	}
+	dir := hddGameDir + "/" + folder
+	g := Game{
+		// titles can carry a line break, as mygames.xml's do
+		Title:    sanitize(strings.Join(strings.Fields(sfo["TITLE"]), " ")),
+		ID:       folder,
+		Path:     dir,
+		MountURL: "/mount_ps3" + dir,
+		IconPath: dir + "/ICON0.PNG",
+		Category: installedCategory,
+	}
+	if g.Title == "" {
+		g.Title = folder
+	}
+	// the running game reports the SFO's ID, so that's the one play totals
+	// and patch checks join on; the folder name stays the path
+	if id := sanitize(sfo["TITLE_ID"]); reSonyID.MatchString(id) {
+		g.ID = id
+	}
+	if v := sanitize(sfo["APP_VER"]); reAppVer.MatchString(v) {
+		g.Ver = v
+	}
+	if covers != "" {
+		g.IconPath, g.AltIcon = covers+g.ID+".JPG", g.IconPath
+	}
+	return g, true
+}
+
+// coversDir is the multiMAN covers folder the library's icons point into
+// ("/dev_hdd0//game/BLES80608/USRDIR/covers/"), or "" when webMAN isn't set to
+// take covers from one.
+func coversDir(lib []Game) string {
+	for _, g := range lib {
+		if g.ID == "" {
+			continue
+		}
+		if dir, ok := strings.CutSuffix(g.IconPath, "/"+g.ID+".JPG"); ok && strings.HasSuffix(dir, "/covers") {
+			return dir + "/"
+		}
+	}
+	return ""
+}
+
+// PARAM.SFO field formats; only the two string forms are read.
+const (
+	sfoUTF8Raw = 0x0004 // not NUL-terminated
+	sfoUTF8    = 0x0204 // NUL-terminated
+)
+
+// parseSFO reads the string fields of a PARAM.SFO, the key/value table every
+// PS3 title carries (TITLE, TITLE_ID, CATEGORY, APP_VER, …). The layout is a
+// 20-byte header — "\0PSF", version, key-table offset, data-table offset,
+// entry count, little-endian — then one 16-byte index entry per field. The
+// bytes came off the network, so every offset is checked before it's used.
+func parseSFO(b []byte) (map[string]string, error) {
+	if len(b) < 20 || string(b[:4]) != "\x00PSF" {
+		return nil, errors.New("not a PARAM.SFO")
+	}
+	le := binary.LittleEndian
+	keys, data, n := uint64(le.Uint32(b[8:])), uint64(le.Uint32(b[12:])), uint64(le.Uint32(b[16:]))
+	size := uint64(len(b))
+	if 20+n*16 > size {
+		return nil, errors.New("PARAM.SFO: index runs past the end")
+	}
+	out := map[string]string{}
+	for i := range n {
+		e := b[20+i*16:]
+		format := le.Uint16(e[2:])
+		if format != sfoUTF8 && format != sfoUTF8Raw {
+			continue
+		}
+		k := keys + uint64(le.Uint16(e))
+		v := data + uint64(le.Uint32(e[12:]))
+		vLen := uint64(le.Uint32(e[4:]))
+		if k >= size || v+vLen > size {
+			return nil, errors.New("PARAM.SFO: field runs past the end")
+		}
+		key, _, ok := bytes.Cut(b[k:], []byte{0})
+		if !ok {
+			return nil, errors.New("PARAM.SFO: unterminated key")
+		}
+		out[string(key)] = string(bytes.TrimRight(b[v:v+vLen], "\x00"))
+	}
+	return out, nil
+}
+
 func (c *Client) Mount(ctx context.Context, g Game) error { return c.fire(ctx, g.MountURL) }
 func (c *Client) Eject(ctx context.Context) error         { return c.fire(ctx, "/mount_ps3/unmount") }
 func (c *Client) Launch(ctx context.Context) error        { return c.fire(ctx, "/play.ps3") }
-func (c *Client) Play(ctx context.Context, g Game) error  { return c.fire(ctx, "/play.ps3"+g.Path) }
 func (c *Client) Shutdown(ctx context.Context) error      { return c.fire(ctx, "/shutdown.ps3") }
 func (c *Client) Restart(ctx context.Context) error       { return c.fire(ctx, "/restart.ps3") }
+
+// Play mounts g and starts it in one request, on a full build only: a Lite
+// build compiles out every /play.ps3 argument and just clicks the disc icon.
+// An installed game goes by its folder name, the form webMAN documents for
+// one ("mount npdrm game and start game from app_home icon").
+func (c *Client) Play(ctx context.Context, g Game) error {
+	if g.Installed() {
+		return c.fire(ctx, "/play.ps3?"+path.Base(g.Path))
+	}
+	return c.fire(ctx, "/play.ps3"+g.Path)
+}
 
 // ExitGame quits the running game back to the XMB; ReloadGame restarts it.
 // Both are the links webMAN's own status page hangs next to the running
@@ -622,9 +816,14 @@ func parseGames(xml string) []Game {
 			games = append(games, g)
 		}
 	}
-	// consoles in chronological order (PSX → PS2 → PSP → PS3); within a
-	// console, series-aware alphabetical (originals before numbered sequels).
-	// Sorting an index keeps each game paired with the key computed for it.
+	return sortGames(games)
+}
+
+// sortGames puts consoles in chronological order (PSX → PS2 → PSP → PS3) and,
+// within a console, series-aware alphabetical (originals before numbered
+// sequels). Sorting an index keeps each game paired with the key computed for
+// it.
+func sortGames(games []Game) []Game {
 	keys := gameKeys(games)
 	order := make([]int, len(games))
 	for i := range order {

@@ -49,6 +49,7 @@ type (
 	gamesMsg struct {
 		games []Game
 		err   error
+		warn  error // the installed-games pass failed; games holds the rest
 	}
 	actionMsg struct {
 		label string
@@ -264,6 +265,15 @@ func newModel(cli *Client, host string, interval time.Duration, alarm int, artOn
 // polling defers on: a status page fetched alongside a fan reply can arrive
 // after it and overwrite the newer reading with the older one.
 func (m *model) busy() bool { return m.inFlight || m.actBusy || m.fanBusy }
+
+// icon is the cover to show for g: its own, or its fallback once the console
+// has failed to serve that.
+func (m *model) icon(g Game) string {
+	if g.AltIcon != "" && m.coverFailed[g.IconPath] {
+		return g.AltIcon
+	}
+	return g.IconPath
+}
 
 func (m *model) mounted(g Game) bool {
 	return m.online && m.st.MountedISO != "" && samePath(m.st.MountedISO, g.Path)

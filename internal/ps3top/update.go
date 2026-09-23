@@ -55,13 +55,25 @@ func (m *model) fetchStatus() tea.Cmd {
 	}
 }
 
+// installedTimeout bounds the /dev_hdd0/game pass that follows mygames.xml:
+// a listing plus one small read per candidate folder, taken one at a time.
+const installedTimeout = 15 * time.Second
+
 func (m *model) fetchGames() tea.Cmd {
 	cli := m.cli
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
 		g, err := cli.Games(ctx)
-		return gamesMsg{g, err}
+		if err != nil {
+			return gamesMsg{err: err}
+		}
+		// the installed games get their own budget and can't sink the list:
+		// the XML already read is the library, and they're added to it
+		ictx, icancel := context.WithTimeout(context.Background(), installedTimeout)
+		defer icancel()
+		inst, ierr := cli.InstalledGames(ictx, g)
+		return gamesMsg{games: sortGames(append(g, inst...)), warn: ierr}
 	}
 }
 
@@ -198,13 +210,14 @@ func (m *model) coverWanted() (string, bool) {
 		return "", false
 	}
 	g, ok := m.selectedGame()
-	if !ok || g.IconPath == "" || m.coverFailed[g.IconPath] {
+	if !ok {
 		return "", false
 	}
-	if m.covers[g.IconPath].shown {
+	icon := m.icon(g)
+	if icon == "" || m.coverFailed[icon] || m.covers[icon].shown {
 		return "", false
 	}
-	return g.IconPath, true
+	return icon, true
 }
 
 // startCover runs the one load: assigns the image id, reads the cache or the
@@ -285,7 +298,9 @@ func (m *model) fetchSizes() tea.Cmd {
 	var cmds []tea.Cmd
 	for _, g := range m.games {
 		folder := path.Dir(g.Path)
-		if g.Path == "" || folder == "/" || folder == "." || seen[folder] {
+		// an installed game is a folder, and the listing it sits in has no
+		// sizes to give — skip the request
+		if g.Path == "" || g.Installed() || folder == "/" || folder == "." || seen[folder] {
 			continue
 		}
 		seen[folder] = true
@@ -531,7 +546,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.applyFilter(m.filterQ)
 		m.reselect(prevSel, hadSel)
-		return m, tea.Batch(m.ensureCover(), m.fetchSizes())
+		cmds := []tea.Cmd{m.ensureCover(), m.fetchSizes()}
+		if msg.warn != nil {
+			m.flash = "installed games: " + msg.warn.Error()
+			cmds = append(cmds, m.clearFlashLater())
+		}
+		return m, tea.Batch(cmds...)
 
 	case actionMsg:
 		m.actBusy = false
@@ -891,6 +911,14 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		g, ok := m.selectedGame()
 		if !ok {
 			return m, nil
+		}
+		// A full build mounts and starts in one request. A Lite build has no
+		// such request: its /play.ps3 drops the argument and clicks the disc
+		// icon, so p started whatever was mounted before, not the row under
+		// the cursor. What Lite offers instead is webMAN's own Auto-Play
+		// setting, which starts a game on mount, so there p is the mount.
+		if m.st.Lite {
+			return m.guarded("play "+g.Title, func(ctx context.Context) error { return cli.Mount(ctx, g) })
 		}
 		return m.guarded("play "+g.Title, func(ctx context.Context) error { return cli.Play(ctx, g) })
 	case "enter":

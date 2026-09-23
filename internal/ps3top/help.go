@@ -30,7 +30,7 @@ var helpSections = []helpSection{
 	}},
 	{"game", []keyHelp{
 		{"⏎", "mount (already mounted → launch)"},
-		{"p", "play: mount + launch"},
+		{"p", "play: mount + launch (Lite: via Auto-Play)"},
 		{"u", "eject"},
 		{"x", "quit the running game to the XMB"},
 		{"X", "restart the running game"},

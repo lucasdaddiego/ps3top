@@ -583,7 +583,8 @@ func (m *model) artPanel() string {
 
 	artCols, artRows := m.artBox()
 	var cover string
-	if ref := m.covers[g.IconPath]; ref.shown {
+	icon := m.icon(g)
+	if ref := m.covers[icon]; ref.shown {
 		// the placement sits centered in the box at the image's own aspect;
 		// the cells around it are plain blanks, not placeholders. Padded by
 		// hand: a placeholder cell is a private-use rune plus two combining
@@ -606,7 +607,7 @@ func (m *model) artPanel() string {
 		// "no cover" is a settled answer, "· · ·" a pending one — a cover
 		// webMAN can't serve shouldn't look like one still loading
 		wait := "· · ·"
-		if m.coverFailed[g.IconPath] {
+		if m.coverFailed[icon] {
 			wait = "no cover"
 		}
 		cover = lipgloss.Place(artCols, artRows, lipgloss.Center, lipgloss.Center, dimSt.Render(wait))
