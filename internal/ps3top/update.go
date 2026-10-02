@@ -901,10 +901,10 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "u":
 		return m.guarded("eject", func(ctx context.Context) error { return cli.Eject(ctx) })
 	case "S":
-		m.confirm = &confirmAction{label: "shutdown", danger: m.st.InGame, run: func(ctx context.Context) error { return cli.Shutdown(ctx) }}
+		m.confirm = m.powerConfirm("shutdown", func(ctx context.Context) error { return cli.Shutdown(ctx) })
 		return m, nil
 	case "R":
-		m.confirm = &confirmAction{label: "restart", danger: m.st.InGame, run: func(ctx context.Context) error { return cli.Restart(ctx) }}
+		m.confirm = m.powerConfirm("restart", func(ctx context.Context) error { return cli.Restart(ctx) })
 		return m, nil
 	case "x":
 		return m.inGameOnly("exit game", func(ctx context.Context) error { return cli.ExitGame(ctx) })
@@ -952,6 +952,13 @@ func (m *model) inGameOnly(label string, fn func(context.Context) error) (tea.Mo
 	}
 	m.confirm = &confirmAction{label: label, danger: true, run: fn}
 	return m, nil
+}
+
+// powerConfirm is the prompt S and R always raise: red when a game runs, and
+// red with the state named unknown when ps3top can't tell (as guarded does).
+func (m *model) powerConfirm(label string, run func(context.Context) error) *confirmAction {
+	unsure := !m.haveStatus || !m.online
+	return &confirmAction{label: label, danger: unsure || m.st.InGame, unsure: unsure, run: run}
 }
 
 // guarded runs immediately on XMB, but demands a red confirm while in-game —

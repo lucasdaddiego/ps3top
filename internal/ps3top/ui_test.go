@@ -651,3 +651,26 @@ func TestSizeSortRowFitsTheListWidth(t *testing.T) {
 		}
 	}
 }
+
+// Power keys ask equally hard when ps3top can't tell: after a failed poll the
+// last reading is stale, so S and R raise the red "state unknown" prompt,
+// not the XMB one.
+func TestPowerPromptWhenStateUnknown(t *testing.T) {
+	for _, k := range []string{"S", "R"} {
+		m := liveModel(t, 120)
+		m.online, m.st.InGame = false, false
+		m.handleKey(key(k))
+		if m.confirm == nil {
+			t.Fatalf("%q: no prompt", k)
+		}
+		if !m.confirm.danger || !m.confirm.unsure {
+			t.Errorf("%q offline: danger=%v unsure=%v, want the red state-unknown prompt", k, m.confirm.danger, m.confirm.unsure)
+		}
+		m = liveModel(t, 120) // a console known to sit on the XMB: the plain prompt
+		m.st.InGame = false
+		m.handleKey(key(k))
+		if m.confirm == nil || m.confirm.danger || m.confirm.unsure {
+			t.Errorf("%q on the XMB: %+v, want the plain confirm", k, m.confirm)
+		}
+	}
+}
