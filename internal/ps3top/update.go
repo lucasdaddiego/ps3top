@@ -450,7 +450,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, notifyCmd("console went offline during "+m.st.GameTitle))
 			}
 			// an auto-discovered address that doesn't answer may have moved
-			return m, tea.Batch(append(cmds, m.sweepLAN())...)
+			return m, tea.Batch(append(cmds, m.sweepLAN(), m.drainFan())...)
 		}
 		wasOnline := m.online
 		m.online, m.haveStatus, m.lastErr = true, true, nil
@@ -499,7 +499,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !wasOnline {
 			cmds = append(cmds, m.fetchGames())
 		}
-		cmds = append(cmds, m.checkPatch(msg.st))
+		cmds = append(cmds, m.checkPatch(msg.st), m.drainFan())
 		return m, tea.Batch(cmds...)
 
 	case gamesMsg:
@@ -559,21 +559,22 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.actBusy = false
 		if msg.err != nil {
 			m.flash = msg.label + ": " + msg.err.Error()
-			return m, m.clearFlashLater()
+			return m, tea.Batch(m.clearFlashLater(), m.drainFan())
 		}
 		m.flash = msg.label + " ✓"
-		return m, tea.Batch(m.refreshNow(), m.clearFlashLater())
+		return m, tea.Batch(m.refreshNow(), m.clearFlashLater(), m.drainFan())
 
 	case rescanMsg:
 		m.actBusy = false
 		if msg.err != nil {
 			m.flash = "rescan: " + msg.err.Error()
-			return m, tea.Batch(m.clearFlashLater(), m.catchUp())
+			return m, tea.Batch(m.clearFlashLater(), m.drainFan(), m.catchUp())
 		}
 		m.flash = "library rescanned ✓"
 		return m, tea.Batch(
 			m.clearFlashLater(),
 			tea.Tick(rescanSettle, func(time.Time) tea.Msg { return reloadMsg{} }),
+			m.drainFan(),
 			m.catchUp(),
 		)
 

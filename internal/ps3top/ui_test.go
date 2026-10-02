@@ -674,3 +674,32 @@ func TestPowerPromptWhenStateUnknown(t *testing.T) {
 		}
 	}
 }
+
+// A fan press while a status poll is in flight waits for it: one request at a
+// time, so the older status page can never land after the fan reply and set
+// FanPct back.
+func TestFanPressWaitsForAnInFlightPoll(t *testing.T) {
+	m := liveModel(t, 120)
+	m.st.FanMode, m.st.FanPct = "manual", 26
+	m.thermalOn = true
+	m.inFlight = true // the scheduled poll is out; its page predates the press
+	stale := Status{FanMode: "manual", FanPct: 26, MaxTemp: unknown, CPUTemp: 58, RSXTemp: 61,
+		Firmware: "x", MemFreeKB: 1, HDDFreeGB: 1}
+	reply := fanMsg{prevPct: 26, prevMax: unknown, prevMode: "manual",
+		st: Status{FanMode: "manual", FanPct: 31, MaxTemp: unknown, CPUTemp: 58, RSXTemp: 61}}
+	m.handleKey(key("up"))
+	if m.fanBusy && m.inFlight {
+		t.Errorf("the fan request went out while a status poll was in flight")
+		m.Update(reply)
+		m.Update(statusMsg{st: stale})
+	} else {
+		m.Update(statusMsg{st: stale})
+		if !m.fanBusy {
+			t.Fatal("the queued press never went out after the poll landed")
+		}
+		m.Update(reply)
+	}
+	if m.st.FanPct != 31 {
+		t.Errorf("an older poll overwrote the fan reply: FanPct = %d, want 31", m.st.FanPct)
+	}
+}

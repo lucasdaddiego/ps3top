@@ -81,8 +81,11 @@ func inverseFan(cmd string) string {
 }
 
 func (m *model) drainFan() tea.Cmd {
-	if m.fanBusy || len(m.fanQueue) == 0 {
-		return nil // the in-flight reply will drain the rest
+	// one gate for polls, actions and fan commands: a press waits for the reply
+	// in flight (which drains the rest), or an older status page would land
+	// after the fan reply and overwrite it
+	if m.busy() || len(m.fanQueue) == 0 {
+		return nil
 	}
 	cmd := m.fanQueue[0]
 	m.fanQueue = m.fanQueue[1:]
