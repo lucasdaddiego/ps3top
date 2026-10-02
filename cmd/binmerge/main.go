@@ -97,9 +97,10 @@ func main() {
 	// Ctrl-C has to reach Run rather than the process: a merge killed mid-copy
 	// leaves a bin that looks like a dump and isn't, so the copy loops watch
 	// this context and remove what they'd written. A second Ctrl-C stops being
-	// polite (signal.Reset) and kills it outright.
+	// polite (the first one unregisters the handler) and kills it outright.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	go func() { <-ctx.Done(); stop() }() // the first signal unregisters: the next one kills
 
 	err := binmerge.Run(ctx, binmerge.Options{
 		CueFile:  positional[0],
