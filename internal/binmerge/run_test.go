@@ -383,3 +383,23 @@ func TestQuoteInBasenameIsRefused(t *testing.T) {
 		t.Error("the refused run wrote output")
 	}
 }
+
+// Two tracks on one INDEX 01 give the first one no sectors. A split would
+// write a 0-byte bin that no cue can index, so the set it makes could never
+// be merged back: the split refuses, and writes nothing.
+func TestSplitRefusesAZeroLengthTrack(t *testing.T) {
+	dir := t.TempDir()
+	makeBin(t, filepath.Join(dir, "m.bin"), 10, 1)
+	if err := os.WriteFile(filepath.Join(dir, "m.cue"), []byte("FILE \"m.bin\" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n"+
+		"  TRACK 02 AUDIO\n    INDEX 01 00:00:05\n  TRACK 03 AUDIO\n    INDEX 01 00:00:05\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	rt := filepath.Join(dir, "rt")
+	_, _, err := exec(t, Options{CueFile: filepath.Join(dir, "m.cue"), Basename: "g", Split: true, OutDir: rt})
+	if err == nil || !strings.Contains(err.Error(), "Track 2 has no sectors") {
+		t.Fatalf("split of a zero-length track: %v", err)
+	}
+	if exists(rt) {
+		t.Error("the refused split wrote output")
+	}
+}

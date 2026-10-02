@@ -125,6 +125,9 @@ func Run(ctx context.Context, opts Options) error {
 		merged := &sheet.Files[0]
 		trackLengths(merged, blocksize)
 		for _, t := range merged.Tracks {
+			if t.Sectors == 0 { // an empty bin: no cue can index it, so the set never merges back
+				return fmt.Errorf("Track %d has no sectors: it starts where the next track starts", t.Number)
+			}
 			outputs = append(outputs, splitOutput{
 				Track: t,
 				Path:  filepath.Join(outDir, trackFilename(opts.Basename, t.Number, len(merged.Tracks))),
