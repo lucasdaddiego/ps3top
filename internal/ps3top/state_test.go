@@ -3,6 +3,7 @@ package ps3top
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -512,22 +513,46 @@ func TestCoverSkippedWhenArtIsHidden(t *testing.T) {
 	}
 }
 
-// 255 is a hard ceiling: the image id is carried in a 256-colour foreground, so
-// beyond it art turns itself off rather than drawing the wrong covers.
-func TestCoverIDsExhaust(t *testing.T) {
+// The image id rides in a 256-colour foreground, so only 1..255 exist. Past
+// the 255th cover of a session art used to switch itself off. The ids now go
+// round: the next cover takes the id given out longest ago, the terminal
+// drops that image first, and the cover that gave it up loads again (from
+// the disk cache) under a new id on its next visit.
+func TestCoverIDsGoRound(t *testing.T) {
 	m := liveModel(t, 120)
 	m.artOn = true
-	m.games[0].IconPath = "/dev_hdd0/tmp/wmtmp/SampleGame2.PNG"
-	m.nextID = 254 // the next allocation is 255, the last encodable one
-	if m.startCover(m.games[0].IconPath) == nil {
-		t.Fatal("id 255 should still be usable")
+	m.cli = NewClient("127.0.0.1:1") // the loads fail at once; only the ids matter here
+	icon := func(i int) string { return fmt.Sprintf("/dev_hdd0/game/G%03d/ICON0.PNG", i) }
+	for i := range 300 {
+		cmd := m.startCover(icon(i))
+		if cmd == nil || !m.artOn {
+			t.Fatalf("cover %d: no load, art on %v", i+1, m.artOn)
+		}
+		m.coverBusy = ""
+		id := m.covers[icon(i)].id
+		if id != i%255+1 {
+			t.Fatalf("cover %d got id %d, want %d", i+1, id, i%255+1)
+		}
+		freed := strings.Contains(raw(cmd), fmt.Sprintf("\x1b_Ga=d,d=I,i=%d,q=2\x1b\\", id))
+		if freed != (i >= 255) {
+			t.Fatalf("cover %d: the terminal's image %d freed %v", i+1, id, freed)
+		}
 	}
-	m.covers, m.coverBusy = map[string]coverRef{}, ""
-	if m.startCover(m.games[0].IconPath) != nil {
-		t.Error("allocated an unencodable image id")
+	if len(m.covers) != 255 {
+		t.Errorf("%d covers held, want 255", len(m.covers))
 	}
-	if m.artOn {
-		t.Error("art should switch itself off once ids run out")
+	ids := map[int]string{}
+	for ic, ref := range m.covers {
+		if other, dup := ids[ref.id]; dup {
+			t.Errorf("%s and %s share id %d", ic, other, ref.id)
+		}
+		ids[ref.id] = ic
+	}
+	if _, kept := m.covers[icon(0)]; kept {
+		t.Error("the cover given its id longest ago kept it")
+	}
+	if ref, ok := m.covers[icon(299)]; !ok || ref.id != 45 {
+		t.Errorf("the newest cover: %+v %v, want id 45", ref, ok)
 	}
 }
 

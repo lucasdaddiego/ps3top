@@ -139,8 +139,18 @@ func transmitEscapes(id int, png []byte, cols, rows int) string {
 	return sb.String()
 }
 
+// maxImageID is the highest image id a placeholder cell can carry: the id
+// rides in the 256-color foreground (placementRow), and 0 names no image.
+const maxImageID = 255
+
+// deleteImage frees image id in the terminal, its pixels and placements, so
+// the id can carry another cover.
+func deleteImage(id int) string {
+	return fmt.Sprintf("\x1b_Ga=d,d=I,i=%d,q=2\x1b\\", id)
+}
+
 // placementRow renders one row of cols placeholder cells for image id (id
-// must be ≤255: it is carried in the 256-color foreground).
+// must be ≤ maxImageID: it is carried in the 256-color foreground).
 func placementRow(id, row, cols int) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "\x1b[38;5;%dm", id)

@@ -222,21 +222,34 @@ func (m *model) coverWanted() (string, bool) {
 
 // startCover runs the one load: assigns the image id, reads the cache or the
 // console, and hands the PNG to the terminal.
+//
+// The ids go round 1..maxImageID: past the last, a new cover takes the id
+// given out longest ago. The cover that held it is not on screen — the panel
+// shows the selected game's, which is this one — so the terminal frees that
+// image before the load, and a later visit loads it again (from the disk
+// cache) under a new id.
 func (m *model) startCover(icon string) tea.Cmd {
+	var free tea.Cmd
 	if _, seen := m.covers[icon]; !seen {
-		m.nextID++
-		if m.nextID > 255 {
-			m.artOn = false // out of 256-color-encodable ids; give up gracefully
-			return nil
+		m.nextID = m.nextID%maxImageID + 1
+		for old, ref := range m.covers {
+			if ref.id == m.nextID {
+				delete(m.covers, old)
+				free = tea.Raw(deleteImage(ref.id))
+			}
 		}
 		m.covers[icon] = coverRef{id: m.nextID}
 	}
 	m.coverBusy = icon
 	cli, cacheDir := m.cli, m.cacheDir
-	return func() tea.Msg {
+	load := func() tea.Msg {
 		c, err := loadCover(cli, cacheDir, icon)
 		return coverMsg{icon, c, err}
 	}
+	if free != nil {
+		return tea.Sequence(free, load)
+	}
+	return load
 }
 
 // replaceCovers re-shapes every transmitted cover's placement to the current
