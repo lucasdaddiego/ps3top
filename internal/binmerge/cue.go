@@ -81,7 +81,7 @@ type Sheet struct {
 
 // stampToSectors reads mm:ss:ff at 75 frames (sectors) per second.
 func stampToSectors(stamp string) (int, error) {
-	bad := fmt.Errorf("Invalid cue timestamp: %s", stamp)
+	bad := fmt.Errorf("invalid cue timestamp: %s", stamp)
 	parts := strings.Split(stamp, ":")
 	if len(parts) != 3 {
 		return 0, bad
@@ -100,7 +100,7 @@ func stampToSectors(stamp string) (int, error) {
 		return 0, bad
 	}
 	if n[1] > 59 || n[2] >= sectorsPerSecond {
-		return 0, fmt.Errorf("Invalid cue timestamp (mm:ss:ff, ss<60, ff<75): %s", stamp)
+		return 0, fmt.Errorf("invalid cue timestamp (mm:ss:ff, ss<60, ff<75): %s", stamp)
 	}
 	return (n[0]*60+n[1])*sectorsPerSecond + n[2], nil
 }
@@ -204,7 +204,7 @@ func ParseCue(cuePath string) (*Sheet, error) {
 				name = m[2] // unquoted; spaces and all
 			}
 			if fileType != "BINARY" {
-				return nil, fmt.Errorf("Unsupported file type %s for %s; only BINARY is supported", fileType, name)
+				return nil, fmt.Errorf("unsupported file type %s for %s; only BINARY is supported", fileType, name)
 			}
 			binPath := filepath.Join(dir, name)
 			var size int64
@@ -223,7 +223,7 @@ func ParseCue(cuePath string) (*Sheet, error) {
 			}
 			num, err := strconv.Atoi(m[1])
 			if err != nil {
-				return nil, fmt.Errorf("Invalid track number: %s", line)
+				return nil, fmt.Errorf("invalid track number: %s", line)
 			}
 			f := &sheet.Files[curFile]
 			f.Tracks = append(f.Tracks, Track{Number: num, Type: strings.ToUpper(m[2])})
@@ -236,7 +236,7 @@ func ParseCue(cuePath string) (*Sheet, error) {
 			}
 			num, err := strconv.Atoi(m[1])
 			if err != nil {
-				return nil, fmt.Errorf("Invalid index number: %s", line)
+				return nil, fmt.Errorf("invalid index number: %s", line)
 			}
 			offset, err := stampToSectors(m[2])
 			if err != nil {
@@ -264,11 +264,11 @@ func ParseCue(cuePath string) (*Sheet, error) {
 	}
 
 	if len(missing) > 0 {
-		return nil, fmt.Errorf("Bin file(s) referenced by the cue are missing or unreadable:\n  %s",
+		return nil, fmt.Errorf("bin file(s) referenced by the cue are missing or unreadable:\n  %s",
 			strings.Join(missing, "\n  "))
 	}
 	if len(sheet.Files) == 0 {
-		return nil, fmt.Errorf("No bin files found in the cue sheet. Is it a valid cue?")
+		return nil, fmt.Errorf("no bin files found in the cue sheet. Is it a valid cue?")
 	}
 	for _, f := range sheet.Files {
 		for _, t := range f.Tracks {

@@ -231,7 +231,7 @@ func TestSplitCueRebasesStamps(t *testing.T) {
 // A cue that describes nothing usable fails at parse rather than at write.
 func TestParseCueRejects(t *testing.T) {
 	for _, tc := range []struct{ name, cue, want string }{
-		{"no files", "REM nothing here\n", "No bin files found"},
+		{"no files", "REM nothing here\n", "no bin files found"},
 		{"track before file", "  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n", "TRACK line before any FILE"},
 		{"index outside a track", "FILE \"game (Track 1).bin\" BINARY\n    INDEX 01 00:00:00\n", "INDEX line outside"},
 		{"track with no index", "FILE \"game (Track 1).bin\" BINARY\n  TRACK 01 AUDIO\n", "no INDEX lines"},

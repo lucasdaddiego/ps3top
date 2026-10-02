@@ -901,12 +901,12 @@ func TestQuitAndRestartGameKeys(t *testing.T) {
 		// in-game: red confirm, then the wire
 		m.online, m.st.InGame = true, true
 		m.flash = ""
-		_, cmd := m.handleKey(key(c.key))
+		m.handleKey(key(c.key))
 		if m.confirm == nil || !m.confirm.danger {
 			t.Fatalf("%q in-game didn't raise the red confirm", c.key)
 		}
-		_, cmd = m.handleKey(key("y"))
-		m = exec(t, m, cmd)
+		_, cmd := m.handleKey(key("y"))
+		exec(t, m, cmd)
 		if got != c.want {
 			t.Errorf("%q hit %q, want %q", c.key, got, c.want)
 		}

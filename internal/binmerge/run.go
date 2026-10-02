@@ -74,7 +74,7 @@ func Run(ctx context.Context, opts Options) error {
 
 	cuePath := resolvePath(opts.CueFile)
 	if st, err := os.Stat(cuePath); err != nil || !st.Mode().IsRegular() {
-		return fmt.Errorf("Cue file not found: %s", cuePath)
+		return fmt.Errorf("cue file not found: %s", cuePath)
 	}
 
 	outDir := filepath.Dir(cuePath)
@@ -165,7 +165,7 @@ func Run(ctx context.Context, opts Options) error {
 
 	log.infof("Output directory: %s", outDir)
 	if err := os.MkdirAll(outDir, 0o755); err != nil {
-		return fmt.Errorf("Could not create output directory: %w", err)
+		return fmt.Errorf("could not create output directory: %w", err)
 	}
 
 	if opts.Split {

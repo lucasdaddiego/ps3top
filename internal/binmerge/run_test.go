@@ -166,7 +166,7 @@ func TestForceOverwritesOutputsNotInputs(t *testing.T) {
 	}
 	if _, _, err := exec(t, Options{CueFile: cue, Basename: "merged", OutDir: out}); err == nil {
 		t.Fatal("second run overwrote an existing output without --force")
-	} else if !strings.Contains(err.Error(), "Refusing to overwrite") {
+	} else if !strings.Contains(err.Error(), "refusing to overwrite") {
 		t.Errorf("error = %v, want a refusal to clobber", err)
 	}
 	if _, _, err := exec(t, Options{CueFile: cue, Basename: "merged", OutDir: out, Force: true}); err != nil {
@@ -206,19 +206,19 @@ func TestErrorPaths(t *testing.T) {
 		{name: "mixed sector sizes", cue: strings.ReplaceAll(gameCue, "MODE2/2352", "MODE1/2048"),
 			want: "sector sizes"},
 		{name: "unknown track type", cue: strings.ReplaceAll(gameCue, "MODE2/2352", "MODE2/2324"),
-			want: "Unsupported track type"},
+			want: "unsupported track type"},
 		{name: "split on a multi-file cue", opts: Options{Split: true},
 			want: "single bin file"},
 		{name: "non-BINARY file", cue: strings.Replace(gameCue, `FILE "game (Track 3).bin" BINARY`, `FILE "game (Track 3).wav" WAVE`, 1),
-			want: "Unsupported file type WAVE"},
+			want: "unsupported file type WAVE"},
 		{name: "backwards indexes", cue: strings.Replace(gameCue, "    INDEX 00 00:00:00\n    INDEX 01 00:02:00\n", "    INDEX 00 00:02:00\n    INDEX 01 00:01:00\n", 1),
 			want: "backwards"},
 		{name: "index past EOF", cue: strings.Replace(gameCue, "INDEX 01 00:02:00", "INDEX 01 10:00:00", 1),
 			want: "beyond the end"},
 		{name: "invalid timestamp", cue: strings.Replace(gameCue, "INDEX 01 00:02:00", "INDEX 01 00:61:99", 1),
-			want: "Invalid cue timestamp"},
+			want: "invalid cue timestamp"},
 		{name: "no cue file", opts: Options{CueFile: "nope.cue"},
-			want: "Cue file not found"},
+			want: "cue file not found"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

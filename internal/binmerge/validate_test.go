@@ -30,7 +30,7 @@ func TestResolveBlocksize(t *testing.T) {
 		{name: "cooked data", files: files("MODE1/2048"), want: 2048},
 		{name: "cd+g", files: files("CDG"), want: 2448},
 		{name: "mixed sizes", files: files("MODE1/2048", "AUDIO"), err: "sector sizes"},
-		{name: "unknown type", files: files("MODE2/2324"), err: "Unsupported track type"},
+		{name: "unknown type", files: files("MODE2/2324"), err: "unsupported track type"},
 		{name: "no tracks", files: []BinFile{{}}, err: "no tracks"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -183,7 +183,7 @@ func TestCheckOutputsExisting(t *testing.T) {
 	inputs := []string{filepath.Join(dir, "src.bin")}
 
 	if err := checkOutputs([]string{out}, inputs, false); err == nil ||
-		!strings.Contains(err.Error(), "Refusing to overwrite") {
+		!strings.Contains(err.Error(), "refusing to overwrite") {
 		t.Errorf("err = %v, want the clobber refusal", err)
 	}
 	if err := checkOutputs([]string{out}, inputs, true); err != nil {

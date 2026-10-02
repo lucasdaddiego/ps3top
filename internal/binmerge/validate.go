@@ -22,13 +22,13 @@ func resolveBlocksize(files []BinFile) (int, error) {
 		for _, t := range f.Tracks {
 			bs, ok := blocksizes[t.Type]
 			if !ok {
-				return 0, fmt.Errorf("Unsupported track type %s (track %d)", t.Type, t.Number)
+				return 0, fmt.Errorf("unsupported track type %s (track %d)", t.Type, t.Number)
 			}
 			seen[t.Type] = bs
 		}
 	}
 	if len(seen) == 0 {
-		return 0, fmt.Errorf("Cue sheet contains no tracks")
+		return 0, fmt.Errorf("cue sheet contains no tracks")
 	}
 	types := make([]string, 0, len(seen))
 	for k := range seen {
@@ -45,7 +45,7 @@ func resolveBlocksize(files []BinFile) (int, error) {
 		}
 	}
 	if mixed {
-		return 0, fmt.Errorf("Cue mixes track modes with different sector sizes (%s)", strings.Join(detail, ", "))
+		return 0, fmt.Errorf("cue mixes track modes with different sector sizes (%s)", strings.Join(detail, ", "))
 	}
 	return blocksize, nil
 }
@@ -56,7 +56,7 @@ func resolveBlocksize(files []BinFile) (int, error) {
 func validateBinSizes(files []BinFile, blocksize int) error {
 	for _, f := range files {
 		if f.Size%int64(blocksize) != 0 {
-			return fmt.Errorf("Size of %s (%d bytes) is not a multiple of the sector size (%d); the file is truncated or corrupt",
+			return fmt.Errorf("size of %s (%d bytes) is not a multiple of the sector size (%d); the file is truncated or corrupt",
 				filepath.Base(f.Path), f.Size, blocksize)
 		}
 	}
@@ -73,7 +73,7 @@ func validateIndexes(files []BinFile, blocksize int) error {
 		for _, t := range f.Tracks {
 			for _, i := range t.Indexes {
 				if i.Offset < prev {
-					return fmt.Errorf("Cue indexes go backwards at track %d INDEX %02d", t.Number, i.Number)
+					return fmt.Errorf("cue indexes go backwards at track %d INDEX %02d", t.Number, i.Number)
 				}
 				if i.Offset >= fileSectors {
 					return fmt.Errorf("Track %d INDEX %02d points at sector %d, beyond the end of %s (%d sectors)",
@@ -157,7 +157,7 @@ func checkOutputs(outputs, inputs []string, force bool) error {
 		}
 	}
 	if len(clashes) > 0 {
-		return fmt.Errorf("Output would overwrite an input file (--force does not allow this):\n  %s",
+		return fmt.Errorf("output would overwrite an input file (--force does not allow this):\n  %s",
 			strings.Join(clashes, "\n  "))
 	}
 
@@ -172,7 +172,7 @@ func checkOutputs(outputs, inputs []string, force bool) error {
 		}
 	}
 	if len(dupes) > 0 {
-		return fmt.Errorf("Two or more outputs would be written to the same path (does the cue repeat a track number?):\n  %s",
+		return fmt.Errorf("two or more outputs would be written to the same path (does the cue repeat a track number?):\n  %s",
 			strings.Join(uniqueSorted(dupes), "\n  "))
 	}
 
@@ -188,7 +188,7 @@ func checkOutputs(outputs, inputs []string, force bool) error {
 		}
 	}
 	if len(existing) > 0 {
-		return fmt.Errorf("Refusing to overwrite existing file(s) (use --force to allow):\n  %s",
+		return fmt.Errorf("refusing to overwrite existing file(s) (use --force to allow):\n  %s",
 			strings.Join(existing, "\n  "))
 	}
 	return nil
