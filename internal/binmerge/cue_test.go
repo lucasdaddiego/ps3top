@@ -248,3 +248,16 @@ func TestParseCueRejects(t *testing.T) {
 		t.Errorf("missing cue: err = %v, want a not-exist error", err)
 	}
 }
+
+// A minutes field so large that (mm*60+ss)*75 wraps must be an error, not a
+// timestamp: 4611686018427387904:02:00 parsed as sector 150 (00:02:00).
+func TestStampOverflowIsAnError(t *testing.T) {
+	for _, stamp := range []string{"4611686018427387904:00:00", "4611686018427387904:02:00", "10000:00:00"} {
+		if got, err := stampToSectors(stamp); err == nil {
+			t.Errorf("stampToSectors(%q) = %d, nil; want an error", stamp, got)
+		}
+	}
+	if got, err := stampToSectors("9999:59:74"); err != nil || got != (9999*60+59)*75+74 {
+		t.Errorf("stampToSectors(9999:59:74) = %d, %v", got, err)
+	}
+}

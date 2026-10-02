@@ -96,6 +96,9 @@ func stampToSectors(stamp string) (int, error) {
 		}
 		n[i] = v
 	}
+	if n[0] > 9999 { // (mm*60+ss)*75 must not wrap: a CD is 80 minutes, a cue never days
+		return 0, bad
+	}
 	if n[1] > 59 || n[2] >= sectorsPerSecond {
 		return 0, fmt.Errorf("Invalid cue timestamp (mm:ss:ff, ss<60, ff<75): %s", stamp)
 	}
