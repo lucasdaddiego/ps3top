@@ -469,10 +469,12 @@ What it protects, since a merge reads the only copy of someone's disc:
   `CATALOG`, disc and track `TITLE`/`PERFORMER`, `REM` — every line the parser
   doesn't act on comes out where it went in, on the right side of the indexes.
   The regexes are anchored, so a keyword inside a `REM` stays a comment.
-- **non-UTF-8 cues decode as cp1252, not latin-1.** The rewritten cue goes out
-  as UTF-8, so a wrong decode is permanent: 0x92 is a right single quote in a
-  Windows-made cue, and latin-1 would bake a C1 control character into the
-  title.
+- **non-UTF-8 cues decode as cp1252, with latin-1 only as the last resort.**
+  The rewritten cue goes out as UTF-8, so a wrong decode is permanent: 0x92 is
+  a right single quote in a Windows-made cue, and latin-1 would bake a C1
+  control character into the title. A sheet that holds one of the five bytes
+  cp1252 leaves undefined (0x81, 0x8D, 0x8F, 0x90, 0x9D) is not cp1252, so
+  that sheet decodes as latin-1, whole.
 
 It descends from a Python tool of the same name (2.1.0, the version `-V` still
 reports) that lived in its own repo until 2026-08-24; the Go port passes that
