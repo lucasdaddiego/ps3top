@@ -175,6 +175,11 @@ func Run(ctx context.Context, opts Options) error {
 	}
 
 	if err := os.WriteFile(newCue, []byte(crlf(cuesheet)), 0o644); err != nil {
+		// nothing partial survives: the new bins are useless without their cue,
+		// and wrong beside an old one whose offsets no longer match
+		for _, p := range outPaths[1:] {
+			os.Remove(p)
+		}
 		return err
 	}
 	log.infof("Wrote new cue: %s", newCue)

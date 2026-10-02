@@ -346,3 +346,27 @@ func TestDefaultOutDirIsCueDir(t *testing.T) {
 		t.Error("outputs didn't land beside the cue")
 	}
 }
+
+// A cue write that fails after the bins are written must not leave the new
+// bin beside the old cue: nothing partial survives a failure.
+func TestCueWriteFailureLeavesNoBin(t *testing.T) {
+	dir := fixture(t, gameCue)
+	out := filepath.Join(dir, "out")
+	if err := os.Mkdir(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldCue := filepath.Join(out, "m.cue")
+	if err := os.WriteFile(oldCue, []byte("FILE \"m.bin\" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := exec(t, Options{CueFile: filepath.Join(dir, "game.cue"), Basename: "m", OutDir: out, Force: true})
+	if err == nil {
+		t.Skip("WriteFile on a 0444 file succeeded (running as root?)")
+	}
+	if exists(filepath.Join(out, "m.bin")) {
+		t.Errorf("the run failed (%v) but left the new m.bin beside the stale m.cue", err)
+	}
+	if !exists(oldCue) {
+		t.Error("the cleanup removed the cue it could not write")
+	}
+}
