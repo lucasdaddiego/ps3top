@@ -1206,3 +1206,22 @@ func TestSortBySize(t *testing.T) {
 		t.Errorf("alphabetical row still shows a size:\n%s", row)
 	}
 }
+
+// A game with no icon has no cover to wait for: the panel says "no cover",
+// not the "· · ·" of a load that never starts.
+func TestArtPanelGameWithoutIcon(t *testing.T) {
+	m := liveModel(t, 120)
+	m.artOn = true
+	if !m.artShown() {
+		t.Fatal("art panel not shown at 120 cols")
+	}
+	if g, ok := m.selectedGame(); !ok || m.icon(g) != "" {
+		t.Fatalf("want a selected game with no icon, got %+v", g)
+	}
+	if _, wanted := m.coverWanted(); wanted {
+		t.Fatal("a game with no icon asked for a cover")
+	}
+	if panel := m.artPanel(); strings.Contains(panel, "· · ·") || !strings.Contains(panel, "no cover") {
+		t.Errorf("a game with no icon:\n%s", panel)
+	}
+}

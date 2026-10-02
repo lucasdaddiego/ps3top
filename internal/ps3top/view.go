@@ -608,9 +608,10 @@ func (m *model) artPanel() string {
 		cover = strings.Join(rows, "\n")
 	} else {
 		// "no cover" is a settled answer, "· · ·" a pending one — a cover
-		// webMAN can't serve shouldn't look like one still loading
+		// webMAN can't serve, or a game that names none, shouldn't look like
+		// one still loading
 		wait := "· · ·"
-		if m.coverFailed[icon] {
+		if icon == "" || m.coverFailed[icon] {
 			wait = "no cover"
 		}
 		cover = lipgloss.Place(artCols, artRows, lipgloss.Center, lipgloss.Center, dimSt.Render(wait))
