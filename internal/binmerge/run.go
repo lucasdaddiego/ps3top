@@ -69,7 +69,7 @@ func Run(ctx context.Context, opts Options) error {
 	// The cue names each bin in double quotes, with no escape for one: a basename
 	// holding '"' would write a cue that nothing, this tool included, can read.
 	if strings.ContainsRune(opts.Basename, '"') {
-		return fmt.Errorf("Basename %s contains a double quote, which a cue's FILE line cannot hold", opts.Basename)
+		return fmt.Errorf("basename %s contains a double quote, which a cue's FILE line cannot hold", opts.Basename)
 	}
 
 	cuePath := resolvePath(opts.CueFile)
