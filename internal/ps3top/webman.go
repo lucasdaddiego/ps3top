@@ -42,9 +42,9 @@ type Status struct {
 	MaxTemp    int    // dynamic mode only: °C ceiling at which webMAN forces the fan up; else unknown
 	MemFreeKB  int    // free available memory (meminfo.avail) — ~1MB in-game is normal; or unknown
 	HDDFreeGB  float64
-	PlayTime   string // "00:28:34" (empty on XMB)
+	PlayTime   string // "00:28:34", "1d 00:28:34" past a day (empty on XMB)
 	PlaySecs   int    // PlayTime in seconds — the authoritative session length
-	Uptime     string // "00:28:53"
+	Uptime     string // "00:28:53", "1d 00:28:53" past a day
 	MountedISO string // "/dev_hdd0/PS3ISO/SampleGame2.iso", "" if nothing mounted
 	Firmware   string // "4.93 CEX PS3HEN 3.5.0"
 	WMVersion  string // "1.47.48q"
@@ -545,8 +545,8 @@ var (
 	reFanPct   = regexp.MustCompile(`FAN SPEED:\s*(\d+)%`)
 	reMem      = regexp.MustCompile(`MEM:\s*([\d,]+)\s*KB`)
 	reHDD      = regexp.MustCompile(`HDD:\s*([\d.,]+)\s*GB free`)
-	rePlay     = regexp.MustCompile(`(?s)title="Play">.*?</label>\s*([\d:]+)`)
-	reUptime   = regexp.MustCompile(`(?s)title="Startup">.*?</label>\s*([\d:]+)`)
+	rePlay     = regexp.MustCompile(`(?s)title="Play">.*?</label>\s*((?:\d+d )?[\d:]+)`)
+	reUptime   = regexp.MustCompile(`(?s)title="Startup">.*?</label>\s*((?:\d+d )?[\d:]+)`)
 	reGameID   = regexp.MustCompile(`/tpl/np/([A-Z0-9]{9})/`)
 	reGameName = regexp.MustCompile(`google\.com/search\?q=[^"]*">([^<]+)</a>`)
 	rePID      = regexp.MustCompile(`>pid=[0-9A-Fa-fx]+<`)
@@ -701,8 +701,17 @@ func matchFloat(re *regexp.Regexp, s string) float64 {
 	return f
 }
 
-// clockSecs converts webMAN's "HH:MM:SS" to seconds (0 if unparseable).
+// clockSecs converts webMAN's "HH:MM:SS", or "Nd HH:MM:SS" past a day, to
+// seconds (0 if unparseable).
 func clockSecs(c string) int {
+	days := 0
+	if d, rest, ok := strings.Cut(c, "d "); ok {
+		n, err := strconv.Atoi(d)
+		if err != nil || n < 0 {
+			return 0
+		}
+		days, c = n, rest
+	}
 	parts := strings.Split(c, ":")
 	if len(parts) != 3 {
 		return 0
@@ -713,7 +722,7 @@ func clockSecs(c string) int {
 	if err1 != nil || err2 != nil || err3 != nil {
 		return 0
 	}
-	return h*3600 + mi*60 + s
+	return days*86400 + h*3600 + mi*60 + s
 }
 
 // mygames.xml is XMB-flavored pseudo-XML (`<>value</>` is not a legal tag),

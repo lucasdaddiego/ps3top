@@ -1036,3 +1036,48 @@ func TestParseSizes(t *testing.T) {
 		t.Error("a non-mountable row was taken for a game")
 	}
 }
+
+// Past a day webMAN puts the days in front of the clock. cpursx.h renders
+// `<label title="Play">&#9737;</label> %s<br>` and the Startup label the
+// same way, with %s from get_sys_info's "%s%02d:%02d:%02d", where the
+// first %s is "%id " once a day has passed (the "Play: " label is cut off
+// before the page gets it). The regexes read "1" of "1d 01:23:45", and the
+// play time became 0s.
+func TestParseStatusClockPastADay(t *testing.T) {
+	b, err := os.ReadFile("testdata/cpursx_ingame.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := func(play, startup string) string {
+		h := strings.Replace(string(b), `title="Play">&#9737;</label> 01:23:45<br>`, `title="Play">&#9737;</label> `+play+`<br>`, 1)
+		return strings.Replace(h, `top:8px;'></label> 01:24:02</a>`, `top:8px;'></label> `+startup+`</a>`, 1)
+	}
+	for _, c := range []struct {
+		play, startup string
+		playSecs      int
+	}{
+		{"01:23:45", "01:24:02", 5025},
+		{"1d 01:23:45", "1d 01:24:02", 86400 + 5025},
+		{"12d 03:04:05", "12d 03:05:00", 12*86400 + 3*3600 + 4*60 + 5},
+	} {
+		s := parseStatus(page(c.play, c.startup))
+		if s.PlayTime != c.play || s.PlaySecs != c.playSecs || s.Uptime != c.startup || !s.InGame {
+			t.Errorf("play %q startup %q: PlayTime %q PlaySecs %d Uptime %q InGame %v; want %q %d %q true",
+				c.play, c.startup, s.PlayTime, s.PlaySecs, s.Uptime, s.InGame, c.play, c.playSecs, c.startup)
+		}
+	}
+	for in, want := range map[string]int{
+		"1d 01:23:45":  91425,
+		"12d 03:04:05": 1047845,
+		"0d 00:00:07":  7,
+		"xd 01:23:45":  0,
+		"1d 01:23":     0,
+	} {
+		if got := clockSecs(in); got != want {
+			t.Errorf("clockSecs(%q) = %d, want %d", in, got, want)
+		}
+	}
+	if got := fmtClock("1d 01:23:45"); got != "25h23m" {
+		t.Errorf("fmtClock(1d 01:23:45) = %q, want 25h23m", got)
+	}
+}
