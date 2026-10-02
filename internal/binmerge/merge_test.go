@@ -160,3 +160,29 @@ func TestMergeCleansUpOnMissingSource(t *testing.T) {
 		t.Error("the partially merged bin was left behind")
 	}
 }
+
+// A split whose os.Create fails (a write-protected file under --force) must
+// not delete that file in its cleanup: the run never created or touched it.
+func TestSplitCleanupKeepsAFileItNeverCreated(t *testing.T) {
+	src := t.TempDir()
+	makeBin(t, filepath.Join(src, "m.bin"), 10, 9)
+	if err := os.WriteFile(filepath.Join(src, "m.cue"), []byte("FILE \"m.bin\" BINARY\n  TRACK 01 AUDIO\n    INDEX 01 00:00:00\n"+
+		"  TRACK 02 AUDIO\n    INDEX 01 00:00:05\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out := filepath.Join(src, "out")
+	if err := os.Mkdir(out, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	keep := filepath.Join(out, "g (Track 2).bin")
+	if err := os.WriteFile(keep, []byte("the user's write-protected file"), 0o444); err != nil {
+		t.Fatal(err)
+	}
+	_, _, err := exec(t, Options{CueFile: filepath.Join(src, "m.cue"), Basename: "g", Split: true, OutDir: out, Force: true})
+	if err == nil {
+		t.Skip("Create on a 0444 file succeeded (running as root?)")
+	}
+	if !exists(keep) {
+		t.Errorf("the run failed with %v, and its cleanup deleted %s, which it never created", err, filepath.Base(keep))
+	}
+}

@@ -121,12 +121,12 @@ func splitFile(ctx context.Context, merged BinFile, outputs []splitOutput, block
 			return err
 		}
 		log.debugf("Writing %s (%d sectors)", filepath.Base(o.Path), o.Track.Sectors)
-		written = append(written, o.Path)
 		var out *os.File // assigned, not declared — see mergeFiles
 		out, err = os.Create(o.Path)
 		if err != nil {
-			return err
+			return err // not ours to remove: a failed Create never touched it
 		}
+		written = append(written, o.Path)
 		err = copyN(ctx, out, src, int64(o.Track.Sectors)*int64(blocksize),
 			fmt.Sprintf("Unexpected end of file in %s while writing %s",
 				filepath.Base(merged.Path), filepath.Base(o.Path)))
