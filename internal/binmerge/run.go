@@ -66,6 +66,11 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("--psx and --split are contradictory: a split set is a multi-file cue, " +
 			"which is exactly what the PS1 emulator can't mount. Merge instead")
 	}
+	// The cue names each bin in double quotes, with no escape for one: a basename
+	// holding '"' would write a cue that nothing, this tool included, can read.
+	if strings.ContainsRune(opts.Basename, '"') {
+		return fmt.Errorf("Basename %s contains a double quote, which a cue's FILE line cannot hold", opts.Basename)
+	}
 
 	cuePath := resolvePath(opts.CueFile)
 	if st, err := os.Stat(cuePath); err != nil || !st.Mode().IsRegular() {

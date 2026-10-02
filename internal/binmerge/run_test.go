@@ -370,3 +370,16 @@ func TestCueWriteFailureLeavesNoBin(t *testing.T) {
 		t.Error("the cleanup removed the cue it could not write")
 	}
 }
+
+// A basename holding '"' would write `FILE "Game "DC".bin"`, which no cue
+// parser reads back: the run refuses it and writes nothing.
+func TestQuoteInBasenameIsRefused(t *testing.T) {
+	dir := fixture(t, gameCue)
+	out := filepath.Join(dir, "out")
+	if _, _, err := exec(t, Options{CueFile: filepath.Join(dir, "game.cue"), Basename: `Game "DC"`, OutDir: out}); err == nil {
+		t.Fatal(`basename Game "DC" accepted`)
+	}
+	if exists(filepath.Join(out, `Game "DC".cue`)) || exists(filepath.Join(out, `Game "DC".bin`)) {
+		t.Error("the refused run wrote output")
+	}
+}
