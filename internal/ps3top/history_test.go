@@ -521,3 +521,44 @@ func eqInts(a, b []int) bool {
 	}
 	return true
 }
+
+// A polling gap (the Mac asleep) can hide a restart the counter doesn't: an
+// hour in, the Mac sleeps 3h, the game is quit and started again, and the
+// wake reads 2h. Those are two sessions, 3h in all, not one of 2h.
+func TestRestartHiddenByAPollingGapIsTwoSessions(t *testing.T) {
+	dir := t.TempDir()
+	m := testModel(t, dir, nil)
+	base := time.Now()
+	defer func(f func() time.Time) { timeNow = f }(timeNow)
+	inGame := func(secs int) Status { return Status{InGame: true, GameID: "MOCK1", GameTitle: "Game", PlaySecs: secs} }
+	timeNow = func() time.Time { return base }
+	m.trackSession(inGame(3600))
+	timeNow = func() time.Time { return base.Add(3 * time.Hour) }
+	m.trackSession(inGame(7200))
+	m.trackSession(Status{InGame: false})
+	if s := mustLoad(t, dir).stats["MOCK1"]; s.Sessions != 2 || s.Secs != 3600+7200 {
+		t.Errorf("got %ds over %d sessions, want 10800s over 2", s.Secs, s.Sessions)
+	}
+}
+
+// A flush after a polling gap dates the session by its last reading, not by
+// the flush: ps3top restarted mid-game wrote 1h, the second run read 80min and
+// the Mac slept 3h before the XMB reading. One 80-minute session, not two.
+func TestFlushAfterAPollingGapKeepsTheSessionStart(t *testing.T) {
+	dir := t.TempDir()
+	base := time.Now()
+	defer func(f func() time.Time) { timeNow = f }(timeNow)
+	inGame := func(secs int) Status { return Status{InGame: true, GameID: "MOCK1", GameTitle: "Game", PlaySecs: secs} }
+	timeNow = func() time.Time { return base }
+	a := testModel(t, dir, nil)
+	a.trackSession(inGame(3600))
+	a.flushSession() // ps3top quits mid-game
+	timeNow = func() time.Time { return base.Add(20 * time.Minute) }
+	b := testModel(t, dir, nil)
+	b.trackSession(inGame(4800))
+	timeNow = func() time.Time { return base.Add(3 * time.Hour) }
+	b.trackSession(Status{InGame: false})
+	if s := mustLoad(t, dir).stats["MOCK1"]; s.Sessions != 1 || s.Secs != 4800 {
+		t.Errorf("got %ds over %d sessions, want 4800s over 1", s.Secs, s.Sessions)
+	}
+}

@@ -203,6 +203,7 @@ type model struct {
 	sesOn                       bool
 	sesID, sesTitle             string
 	sesSecs, sesPeakC, sesPeakR int
+	sesSeen                     time.Time // when sesSecs was read: dates the session after a polling gap
 
 	games     []Game
 	consoles  []string // consoles present, chronological (PSX, PS2, PSP, PS3)

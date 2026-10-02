@@ -43,7 +43,17 @@ func (m *model) trackSession(st Status) bool {
 	// stopped and started again between two polls — a new session under a title
 	// the check above can't distinguish. Without this the earlier session was
 	// silently overwritten by the shorter reading and never recorded.
-	if m.sesOn && st.PlaySecs < m.sesSecs {
+	//
+	// A polling gap (the Mac asleep) can hide a restart the counter doesn't: quit
+	// at 1h, start again, read 2h at wake. The start the counter implies
+	// (now - PlaySecs) is what moves, by more than mergeWindow.
+	now := timeNow()
+	moved := false
+	if m.sesOn && !m.sesSeen.IsZero() {
+		was := m.sesSeen.Add(-time.Duration(m.sesSecs) * time.Second)
+		moved = absDur(now.Add(-time.Duration(st.PlaySecs)*time.Second).Sub(was)) > mergeWindow
+	}
+	if m.sesOn && (st.PlaySecs < m.sesSecs || moved) {
 		if m.flushSession() {
 			flashed = true
 		}
@@ -58,7 +68,7 @@ func (m *model) trackSession(st Status) bool {
 	}
 	// webMAN's own counter, not a clock we started — correct even if ps3top
 	// joined the session late or was restarted mid-game
-	m.sesSecs = st.PlaySecs
+	m.sesSecs, m.sesSeen = st.PlaySecs, now
 	if st.CPUTemp != unknown && st.CPUTemp > m.sesPeakC {
 		m.sesPeakC = st.CPUTemp
 	}
@@ -84,13 +94,18 @@ func (m *model) flushSession() bool {
 	// Started is what makes this record identifiable as one session across ps3top
 	// restarts: Secs is webMAN's cumulative PlayTime, so quitting mid-game and
 	// coming back writes the total twice, and only a stable start time lets the
-	// two be recognised as the same play rather than added together.
-	now := timeNow()
+	// two be recognised as the same play rather than added together. Both are
+	// dated by the last reading, not the flush: after a polling gap (the Mac
+	// asleep) the flush can come hours after the game last ran.
+	seen := m.sesSeen
+	if seen.IsZero() {
+		seen = timeNow()
+	}
 	rec := sessionRec{
 		ID:      id,
 		Title:   title,
-		Started: now.Add(-time.Duration(secs) * time.Second),
-		End:     now,
+		Started: seen.Add(-time.Duration(secs) * time.Second),
+		End:     seen,
 		Secs:    secs,
 		PeakCPU: peakC,
 		PeakRSX: peakR,
