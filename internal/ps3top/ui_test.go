@@ -626,3 +626,28 @@ func TestFooterPointsAtTheHelpScreen(t *testing.T) {
 		}
 	}
 }
+
+// In the size sort the row carries a size column: the title must shrink by
+// it, or a long title pushes the row past the list width and the frame clip
+// cuts the mounted mark.
+func TestSizeSortRowFitsTheListWidth(t *testing.T) {
+	for _, w := range []int{60, 80} {
+		m := liveModel(t, w)
+		m.games[0].Title = "Sample Quest: The Beginning - Game of the Year Edition"
+		m.titleColW = lipgloss.Width(m.games[0].Title)
+		m.st.MountedISO = m.games[0].Path
+		m.sizes = map[string]int64{m.games[0].Path: 9 << 30}
+		m.sortMode = sortSize
+		m.applyFilter("")
+		for i := range m.order {
+			if got := lipgloss.Width(m.renderRow(m.order[i], false)); got > m.listWidth() {
+				t.Errorf("width %d: row %d is %d cols, the list is %d", w, i, got, m.listWidth())
+			}
+		}
+		for _, line := range strings.Split(m.frame(), "\n") {
+			if strings.Contains(line, "Sample Quest") && !strings.Contains(line, "mounted") {
+				t.Errorf("width %d: the mounted mark was clipped off the row:\n%s", w, line)
+			}
+		}
+	}
+}

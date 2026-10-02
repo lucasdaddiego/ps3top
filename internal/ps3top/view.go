@@ -515,6 +515,9 @@ func (m *model) renderRow(gi int, sel bool) string {
 	if played != "" {
 		avail -= m.playColW + 2 // +2 keeps it off the mounted mark
 	}
+	if m.sortMode == sortSize {
+		avail -= 1 + sizeColW // the size column, as listNeed counts it
+	}
 	title := truncPad(g.Title, clamp(m.titleColW, 10, avail))
 
 	var b strings.Builder
