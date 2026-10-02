@@ -78,11 +78,21 @@ func main() {
 
 	// stdlib flag stops at the first positional, but this CLI has always taken
 	// `binmerge game.cue merged -o out`. Re-parse what's left after each one.
-	flag.Parse()
+	// After a "--", everything is positional: `binmerge -- -g.cue -m`.
+	args := os.Args[1:]
 	var positional []string
-	for flag.NArg() > 0 {
-		positional = append(positional, flag.Arg(0))
-		flag.CommandLine.Parse(flag.Args()[1:])
+	for {
+		flag.CommandLine.Parse(args)
+		rest := flag.Args()
+		if n := len(args) - len(rest); n > 0 && args[n-1] == "--" {
+			positional = append(positional, rest...)
+			break
+		}
+		if len(rest) == 0 {
+			break
+		}
+		positional = append(positional, rest[0])
+		args = rest[1:]
 	}
 
 	if *ver {

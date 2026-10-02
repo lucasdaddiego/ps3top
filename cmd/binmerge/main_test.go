@@ -79,3 +79,23 @@ func TestSecondCtrlCKills(t *testing.T) {
 		t.Errorf("still running 3s after a second Ctrl-C; stderr:\n%s", stderr.String())
 	}
 }
+
+// After "--" every argument is positional, not only the first one:
+// `binmerge -n -- -g.cue -m` must not read -m as an unknown flag.
+func TestDoubleDashProtectsEveryPositional(t *testing.T) {
+	dir := t.TempDir()
+	cue := writeSet(t, dir, 2)
+	if err := os.Rename(cue, filepath.Join(dir, "-g.cue")); err != nil {
+		t.Fatal(err)
+	}
+	cmd := runMain("-n", "--", "-g.cue", "-m")
+	cmd.Dir = dir
+	if outb, err := cmd.CombinedOutput(); err != nil {
+		t.Errorf("`binmerge -n -- -g.cue -m` failed (%v):\n%s", err, outb)
+	}
+	// the interleaved form keeps working: flags after each positional
+	cmd = runMain(filepath.Join(dir, "-g.cue"), "m", "-n", "-o", filepath.Join(dir, "out"))
+	if outb, err := cmd.CombinedOutput(); err != nil {
+		t.Errorf("interleaved `cue m -n -o out` failed (%v):\n%s", err, outb)
+	}
+}
