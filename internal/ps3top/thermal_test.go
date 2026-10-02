@@ -781,3 +781,25 @@ func TestFanReport(t *testing.T) {
 		}
 	}
 }
+
+// r in the thermal screen while the console is busy owes the poll, as it
+// does on the main screen, and catchUp takes it once the path clears. The
+// press used to vanish: no poll then and none owed.
+func TestThermalRefreshWhileBusyIsOwed(t *testing.T) {
+	m := liveModel(t, 120)
+	m.handleKey(key("t"))
+	m.actBusy = true
+	m.handleKey(key("r"))
+	if !m.needStatus {
+		t.Fatal("r in the thermal screen while busy was dropped")
+	}
+	m.actBusy = false
+	if cmd := m.catchUp(); cmd == nil || !m.inFlight {
+		t.Error("the owed poll never went out")
+	}
+	// and with the path clear it polls at once
+	m.inFlight = false
+	if _, cmd := m.handleKey(key("r")); cmd == nil || !m.inFlight {
+		t.Error("r in the thermal screen did not poll")
+	}
+}

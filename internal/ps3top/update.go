@@ -827,9 +827,7 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return m, m.queueFan(fanMode)
 		case "r":
-			if !m.busy() {
-				return m, m.fetchStatus()
-			}
+			return m, m.refreshNow() // busy: the poll is owed, and catchUp takes it
 		}
 		return m, nil
 	}
