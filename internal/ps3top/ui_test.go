@@ -703,3 +703,25 @@ func TestFanPressWaitsForAnInFlightPoll(t *testing.T) {
 		t.Errorf("an older poll overwrote the fan reply: FanPct = %d, want 31", m.st.FanPct)
 	}
 }
+
+// An action's follow-up poll is owed while an older poll is out: that poll's
+// page predates the action, so its landing must not cancel the follow-up, or
+// "● mounted" stays on the row an eject just cleared (and enter would launch
+// instead of mount) until the next tick.
+func TestActionFollowUpPollSurvivesAnOlderPoll(t *testing.T) {
+	m := liveModel(t, 120)
+	m.st = Status{MountedISO: "/dev_hdd0/PS3ISO/SampleGame2.iso", FanPct: 26, CPUTemp: 50, RSXTemp: 50,
+		FanMode: "SYSCON", MaxTemp: unknown, Firmware: "x", MemFreeKB: 1, HDDFreeGB: 1}
+	m.inFlight = true // poll P is out
+	if _, cmd := m.handleKey(key("u")); cmd == nil || !m.actBusy {
+		t.Fatal("eject not dispatched")
+	}
+	m.Update(actionMsg{label: "eject"})
+	if !m.needStatus {
+		t.Fatal("the follow-up poll is not owed")
+	}
+	m.Update(statusMsg{st: m.st}) // P lands, rendered before the eject
+	if !m.needStatus && !m.inFlight {
+		t.Error("P's landing dropped the post-eject refresh")
+	}
+}

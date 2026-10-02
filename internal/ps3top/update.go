@@ -45,7 +45,7 @@ func (m *model) tick(d time.Duration) tea.Cmd {
 }
 
 func (m *model) fetchStatus() tea.Cmd {
-	m.inFlight = true
+	m.inFlight, m.needStatus = true, false // this poll answers every earlier want
 	cli := m.cli
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
@@ -434,7 +434,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(cmd, m.tick(next))
 
 	case statusMsg:
-		m.inFlight, m.needStatus = false, false
+		// needStatus stays: a want raised while this poll was out (an action's
+		// follow-up, an r) postdates its page, and catchUp below takes it
+		m.inFlight = false
 		if msg.err != nil {
 			wasInGame := m.online && m.st.InGame
 			m.online = false
@@ -450,7 +452,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, notifyCmd("console went offline during "+m.st.GameTitle))
 			}
 			// an auto-discovered address that doesn't answer may have moved
-			return m, tea.Batch(append(cmds, m.sweepLAN(), m.drainFan())...)
+			return m, tea.Batch(append(cmds, m.sweepLAN(), m.drainFan(), m.catchUp())...)
 		}
 		wasOnline := m.online
 		m.online, m.haveStatus, m.lastErr = true, true, nil
@@ -499,7 +501,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !wasOnline {
 			cmds = append(cmds, m.fetchGames())
 		}
-		cmds = append(cmds, m.checkPatch(msg.st), m.drainFan())
+		cmds = append(cmds, m.checkPatch(msg.st), m.drainFan(), m.catchUp())
 		return m, tea.Batch(cmds...)
 
 	case gamesMsg:
