@@ -589,7 +589,7 @@ func (m *model) artPanel() string {
 		// the cells around it are plain blanks, not placeholders. Padded by
 		// hand: a placeholder cell is a private-use rune plus two combining
 		// marks, which is not something to ask a width function about.
-		left := (artCols - ref.cols) / 2
+		left := max(0, (artCols-ref.cols)/2) // never negative, even for one stale frame
 		top := (artRows - ref.rows) / 2
 		blank := strings.Repeat(" ", artCols)
 		rows := make([]string, 0, artRows)

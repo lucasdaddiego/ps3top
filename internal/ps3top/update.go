@@ -546,7 +546,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.applyFilter(m.filterQ)
 		m.reselect(prevSel, hadSel)
-		cmds := []tea.Cmd{m.ensureCover(), m.fetchSizes()}
+		// a longer title widens the list and shrinks the art box: a shown cover
+		// must be re-placed to it, or its placement overflows the box
+		cmds := []tea.Cmd{m.replaceCovers(), m.ensureCover(), m.fetchSizes()}
 		if msg.warn != nil {
 			m.flash = "installed games: " + msg.warn.Error()
 			cmds = append(cmds, m.clearFlashLater())
@@ -613,7 +615,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		ref := m.covers[msg.icon]
 		ref.shown = true
 		m.covers[msg.icon] = ref
-		return m, m.ensureCover()
+		// a resize during the transmit skipped this cover (not shown yet)
+		return m, tea.Batch(m.replaceCovers(), m.ensureCover())
 
 	case thermalHistMsg:
 		m.tHist, m.tHistErr = msg.recs, msg.err

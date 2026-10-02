@@ -2,6 +2,7 @@ package ps3top
 
 import (
 	"bytes"
+	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -12,6 +13,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
 )
 
 func tinyPNG(t *testing.T) []byte {
@@ -211,5 +214,80 @@ func TestNonConsoleIconPathIsRefused(t *testing.T) {
 	}
 	if *hits != 0 {
 		t.Errorf("a URL icon still cost %d request(s)", *hits)
+	}
+}
+
+// frameOrPanic renders a frame and turns a panic into an error.
+func frameOrPanic(m *model) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("View panicked: %v", r)
+		}
+	}()
+	_ = m.frame()
+	return nil
+}
+
+// A games reload that adds a longer title widens the list and shrinks the art
+// box: the shown cover must be re-placed to the new box, or artPanel's left
+// pad goes negative and strings.Repeat panics.
+func TestCoverRePlacedWhenAReloadWidensTheList(t *testing.T) {
+	m := liveModel(t, 120)
+	m.height = 40
+	m.listH = m.height - headerH - footerH
+	m.artOn = true
+	lib := []Game{
+		{Title: "Sample Game™ 2", ID: "MOCK30982", Category: "hdd0/PS3ISO",
+			Path: "/dev_hdd0/PS3ISO/SampleGame2.iso", MountURL: "/mount_ps3/dev_hdd0/PS3ISO/SampleGame2.iso",
+			IconPath: "/dev_hdd0/tmp/wmtmp/SampleGame2.PNG"},
+		{Title: "Alpha", ID: "MOCK00001", Category: "hdd0/PS3ISO",
+			Path: "/dev_hdd0/PS3ISO/Alpha.iso", MountURL: "/mount_ps3/dev_hdd0/PS3ISO/Alpha.iso",
+			IconPath: "/dev_hdd0/tmp/wmtmp/Alpha.PNG"},
+	}
+	m.Update(gamesMsg{games: sortGames(append([]Game(nil), lib...))})
+	g, ok := m.selectedGame()
+	if !ok {
+		t.Fatal("no selection")
+	}
+	icon := m.icon(g)
+	m.startCover(icon)
+	m.Update(coverMsg{icon: icon, c: cover{png: tinyPNG(t), w: 320, h: 176}})
+	m.Update(coverShownMsg{icon: icon})
+	long := Game{Title: "Sample Quest: The Beginning - Game of the Year Edition Remastered", ID: "MOCK00103",
+		Category: "hdd0/PS3ISO", Path: "/dev_hdd0/PS3ISO/SQ.iso", MountURL: "/mount_ps3/dev_hdd0/PS3ISO/SQ.iso"}
+	m.Update(gamesMsg{games: sortGames(append(append([]Game(nil), lib...), long))})
+	if sel, _ := m.selectedGame(); m.icon(sel) != icon {
+		t.Fatal("the selection moved off the shown cover")
+	}
+	if box, _ := m.artBox(); m.covers[icon].cols > box {
+		t.Errorf("the cover is %d cols in a %d-col box after the reload", m.covers[icon].cols, box)
+	}
+	if err := frameOrPanic(m); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A resize that lands between the cover's transmit and its shown mark is
+// skipped by replaceCovers (the cover is not shown yet): marking it shown
+// must re-place it to the box, or the next frame panics.
+func TestCoverRePlacedAfterAResizeDuringTransmit(t *testing.T) {
+	m := liveModel(t, 160)
+	m.Update(tea.WindowSizeMsg{Width: 160, Height: 60})
+	m.artOn = true
+	lib := []Game{{Title: "Sample Game™ 2", ID: "MOCK30982", Category: "hdd0/PS3ISO",
+		Path: "/dev_hdd0/PS3ISO/SampleGame2.iso", MountURL: "/mount_ps3/dev_hdd0/PS3ISO/SampleGame2.iso",
+		IconPath: "/dev_hdd0/tmp/wmtmp/SampleGame2.PNG"}}
+	m.Update(gamesMsg{games: lib})
+	g, _ := m.selectedGame()
+	icon := m.icon(g)
+	m.startCover(icon)
+	m.Update(coverMsg{icon: icon, c: cover{png: tinyPNG(t), w: 320, h: 176}})
+	m.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m.Update(coverShownMsg{icon: icon})
+	if box, _ := m.artBox(); m.covers[icon].cols > box {
+		t.Errorf("the cover is %d cols in a %d-col box after the resize", m.covers[icon].cols, box)
+	}
+	if err := frameOrPanic(m); err != nil {
+		t.Fatal(err)
 	}
 }
