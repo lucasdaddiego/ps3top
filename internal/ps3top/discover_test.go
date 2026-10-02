@@ -1,6 +1,7 @@
 package ps3top
 
 import (
+	"context"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -8,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // loopbackWebMAN starts a server on 127.0.0.1 that answers like webMAN and
@@ -24,15 +26,40 @@ func loopbackWebMAN(t *testing.T, body string) string {
 // Discovery's whole identity check is "the body says webMAN" — convenient
 // rather than cryptographic, and worth pinning so it can't loosen further.
 func TestIsWebMAN(t *testing.T) {
-	if host := loopbackWebMAN(t, "webMAN 1.47.48q MOD - Simple Web Server"); !isWebMAN(host) {
+	ctx := context.Background()
+	if host := loopbackWebMAN(t, "webMAN 1.47.48q MOD - Simple Web Server"); !isWebMAN(ctx, host) {
 		t.Error("a webMAN banner wasn't recognised")
 	}
-	if host := loopbackWebMAN(t, "<html>nginx default page</html>"); isWebMAN(host) {
+	if host := loopbackWebMAN(t, "<html>nginx default page</html>"); isWebMAN(ctx, host) {
 		t.Error("an unrelated web server passed as a console")
 	}
 	// nothing listening at all
-	if isWebMAN("127.0.0.1:1") {
+	if isWebMAN(ctx, "127.0.0.1:1") {
 		t.Error("a dead address reported as webMAN")
+	}
+}
+
+// isWebMAN stays inside the sweep's context: once the sweep has its console,
+// or its budget is spent, a verify still waiting on a slow host gives up
+// then, not sweepVerifyTimeout later.
+func TestIsWebMANHonoursTheSweepContext(t *testing.T) {
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(func() { close(release); srv.Close() })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	time.AfterFunc(100*time.Millisecond, cancel) // another probe found the console
+	start := time.Now()
+	if isWebMAN(ctx, strings.TrimPrefix(srv.URL, "http://")) {
+		t.Error("a host that never answered passed as a console")
+	}
+	if took := time.Since(start); took > sweepVerifyTimeout/2 {
+		t.Errorf("the verify ran %v past the sweep's cancel, want it to stop with it", took)
 	}
 }
 

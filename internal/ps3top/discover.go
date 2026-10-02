@@ -95,9 +95,11 @@ func findConsole(announce func(nets string)) (string, error) {
 }
 
 // isWebMAN reports whether host serves webMAN's status page — Status already
-// insists on the banner, so any answer it accepts is a console.
-func isWebMAN(host string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), sweepVerifyTimeout)
+// insists on the banner, so any answer it accepts is a console. It gives up
+// with ctx (the sweep's: a console found elsewhere, or the budget spent) or
+// after sweepVerifyTimeout, whichever comes first.
+func isWebMAN(ctx context.Context, host string) bool {
+	ctx, cancel := context.WithTimeout(ctx, sweepVerifyTimeout)
 	defer cancel()
 	_, err := NewClient(host).Status(ctx)
 	return err == nil
@@ -192,7 +194,7 @@ func sweep(subnets []subnet) string {
 					return
 				}
 				conn.Close()
-				if isWebMAN(addr) {
+				if isWebMAN(ctx, addr) {
 					select {
 					case found <- ip:
 						cancel()
