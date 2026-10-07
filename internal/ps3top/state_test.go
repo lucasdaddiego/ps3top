@@ -1250,3 +1250,41 @@ func TestArtPanelGameWithoutIcon(t *testing.T) {
 		t.Errorf("a game with no icon:\n%s", panel)
 	}
 }
+
+// endsInQuit walks a command — through batches and sequences — to the
+// message it ends in, and reports whether that is bubbletea's QuitMsg.
+func endsInQuit(cmd tea.Cmd) bool {
+	if cmd == nil {
+		return false
+	}
+	msg := cmd()
+	if parts := cmdsIn(msg); parts != nil {
+		return len(parts) > 0 && endsInQuit(parts[len(parts)-1])
+	}
+	_, ok := msg.(tea.QuitMsg)
+	return ok
+}
+
+// SIGINT and SIGTERM reach bubbletea as InterruptMsg and QuitMsg, which it
+// acts on before Update sees them — so a `kill ps3top` or a closed terminal
+// mid-game lost the session line. The filter turns them into the quit path,
+// once: the QuitMsg that quit() itself ends in passes through.
+func TestInterruptGoesThroughQuit(t *testing.T) {
+	m := liveModel(t, 120)
+	for _, sig := range []tea.Msg{tea.InterruptMsg{}, tea.QuitMsg{}} {
+		m.quitting = false
+		if _, ok := interruptFilter(m, sig).(interruptMsg); !ok {
+			t.Errorf("%T passed the filter before quit", sig)
+		}
+	}
+	_, cmd := m.Update(interruptMsg{})
+	if !m.quitting || !endsInQuit(cmd) {
+		t.Error("an interrupt didn't take the quit path")
+	}
+	if _, ok := interruptFilter(m, tea.QuitMsg{}).(tea.QuitMsg); !ok {
+		t.Error("quit()'s own QuitMsg was routed back through quit")
+	}
+	if _, ok := interruptFilter(m, tickMsg{}).(tickMsg); !ok {
+		t.Error("the filter touched an ordinary message")
+	}
+}

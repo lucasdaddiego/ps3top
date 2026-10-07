@@ -41,8 +41,9 @@ func usage() {
 func Run(build Build) error {
 	host := flag.String("host", os.Getenv("PS3TOP_HOST"), "PS3 address (default: auto-discover; env PS3TOP_HOST)")
 	interval := flag.Duration("interval", 15*time.Second, "status poll interval (min 5s)")
-	alarm := flag.Int("alarm", 80, "temp alarm threshold, °C (PS3 overheats/shuts down ~85)")
+	alarm := flag.Int("alarm", 80, "temp alarm threshold, °C, 1..120 (PS3 overheats/shuts down ~85)")
 	noArt := flag.Bool("no-art", false, "disable cover art")
+	noPatch := flag.Bool("no-patch", false, "don't ask Sony's title-update index about the running game")
 	ver := flag.Bool("version", false, "print version")
 	flag.CommandLine.Usage = usage
 	flag.Parse()
@@ -53,6 +54,11 @@ func Run(build Build) error {
 	}
 	if *interval < 5*time.Second {
 		*interval = 5 * time.Second
+	}
+	// a temperature, not a free integer: 0 would alarm on the first poll
+	// for the whole session, and past 120 nothing could ever fire it
+	if *alarm < 1 || *alarm > 120 {
+		return fmt.Errorf("--alarm: %d°C is outside 1..120", *alarm)
 	}
 
 	dataRoot, err := dataDir()
@@ -103,9 +109,25 @@ func Run(build Build) error {
 	// with a 15s poll cadence even that is mostly idle no-ops.
 	m := newModel(cli, *host, *interval, *alarm, !*noArt, cacheDir, hist)
 	m.tlog = newThermalLog(dataRoot)
+	m.patchOn = !*noPatch
 	if auto {
 		m.hostCache = hostCache
 	}
-	_, err = tea.NewProgram(m, tea.WithFPS(30)).Run()
+	_, err = tea.NewProgram(m, tea.WithFPS(30), tea.WithFilter(interruptFilter)).Run()
 	return err
+}
+
+// interruptFilter routes SIGINT and SIGTERM through quit(). bubbletea turns
+// them into InterruptMsg and QuitMsg and returns on either before Update
+// sees it, so a `kill ps3top` or a closed terminal mid-game lost the session
+// line and the open thermal minute. Once quit() has run, the QuitMsg it ends
+// in passes through.
+func interruptFilter(m tea.Model, msg tea.Msg) tea.Msg {
+	switch msg.(type) {
+	case tea.InterruptMsg, tea.QuitMsg:
+		if mm, ok := m.(*model); ok && !mm.quitting {
+			return interruptMsg{}
+		}
+	}
+	return msg
 }

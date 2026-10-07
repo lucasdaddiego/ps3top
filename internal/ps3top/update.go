@@ -296,6 +296,7 @@ func (m *model) anyShown() bool {
 // the program exits — in that order, through the renderer, so the delete
 // can't race a frame or a transmission still in flight.
 func (m *model) quit() tea.Cmd {
+	m.quitting = true
 	m.flushSession()
 	if m.tlog != nil {
 		_ = m.tlog.flush() // the open minute; nowhere left to report a failure
@@ -393,9 +394,11 @@ func plainTemp(v int) string {
 // checkPatch asks Sony once per session whether the running title has a
 // newer patch than the version webMAN reports. Off the console's gate —
 // it's a request to the internet, not to the PS3 — and never repeated for
-// a title, whatever the answer.
+// a title, whatever the answer. --no-patch (patchOn false) never asks: a
+// title ID is a record of what's being played, and leaving the LAN is
+// the user's call.
 func (m *model) checkPatch(st Status) tea.Cmd {
-	if !st.InGame || st.GameID == "" || st.GameVer == "" {
+	if !m.patchOn || !st.InGame || st.GameID == "" || st.GameVer == "" {
 		return nil
 	}
 	if _, asked := m.patches[st.GameID]; asked {
@@ -710,6 +713,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.flash = ""
 		}
 		return m, nil
+
+	case interruptMsg:
+		// SIGINT or SIGTERM, via interruptFilter: the same exit as q, so the
+		// open session and the thermal minute reach disk
+		return m, m.quit()
 
 	case tea.KeyPressMsg:
 		return m.handleKey(msg)

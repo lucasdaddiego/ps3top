@@ -54,7 +54,10 @@ type (
 		// folded into sfoCache so the next load skips those folders
 		learned map[string]map[string]string
 	}
-	actionMsg struct {
+	// interruptMsg is a SIGINT or SIGTERM, routed through quit() by
+	// interruptFilter so the open session and thermal minute are flushed
+	interruptMsg struct{}
+	actionMsg    struct {
 		label string
 		err   error
 	}
@@ -177,13 +180,18 @@ type model struct {
 	hCPU, hRSX, hFan series
 
 	// patches is the newest patch version Sony lists per title ID, asked
-	// once per title per session when it's the running game ("" = none)
+	// once per title per session when it's the running game ("" = none);
+	// patchOn is that check, which --no-patch turns off
 	patches map[string]string
+	patchOn bool
 	// sfoCache is each /dev_hdd0/game folder's PARAM.SFO as read this
 	// session (nil for one that wouldn't parse), so a reload reads only the
 	// folders it hasn't seen: forty PSN and DLC folders cost forty requests
 	// per reload before, and the pass ran out its budget as often as not
 	sfoCache map[string]map[string]string
+	// quitting is set once quit() has run, so interruptFilter passes the
+	// QuitMsg it ends in instead of routing it back through quit()
+	quitting bool
 	// sizes is each library file's exact byte size, keyed by Game.Path,
 	// from the ISO folders' listings after every games load
 	sizes      map[string]int64
@@ -254,6 +262,7 @@ func newModel(cli *Client, host string, interval time.Duration, alarm int, artOn
 		covers:      map[string]coverRef{},
 		coverFailed: map[string]bool{},
 		patches:     map[string]string{},
+		patchOn:     true,
 		sfoCache:    map[string]map[string]string{},
 		sizes:       map[string]int64{},
 	}

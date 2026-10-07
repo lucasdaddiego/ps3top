@@ -205,3 +205,22 @@ func TestLivePatchLookup(t *testing.T) {
 		t.Errorf("unknown title = %q, %v; want empty, nil", got, err)
 	}
 }
+
+// --no-patch: no title ID leaves the LAN. checkPatch builds no lookup and
+// records nothing, whatever game is running.
+func TestNoPatchAsksSonyNothing(t *testing.T) {
+	prev := patchLookup
+	t.Cleanup(func() { patchLookup = prev })
+	patchLookup = func(context.Context, string) (string, error) {
+		t.Error("Sony was asked")
+		return "", nil
+	}
+	m := liveModel(t, 120)
+	m.patchOn = false
+	if cmd := m.checkPatch(Status{InGame: true, GameID: "MOCK30982", GameVer: "01.15"}); cmd != nil {
+		t.Fatal("--no-patch still built a lookup")
+	}
+	if len(m.patches) != 0 {
+		t.Errorf("patches = %v, want none", m.patches)
+	}
+}

@@ -92,3 +92,19 @@ func TestDataDirWithoutAHome(t *testing.T) {
 		t.Errorf("dataDir with no HOME returned %q", got)
 	}
 }
+
+// --alarm is a temperature, not a free integer: 0 made the first poll alarm
+// (bell, notification, red frame for the whole session), and 121 could never
+// fire. Outside 1..120 is refused before anything is sent.
+func TestAlarmIsValidated(t *testing.T) {
+	for _, v := range []string{"0", "-5", "121"} {
+		prevArgs, prevFlags := os.Args, flag.CommandLine
+		flag.CommandLine = flag.NewFlagSet("ps3top", flag.ContinueOnError)
+		os.Args = []string{"ps3top", "--host", "127.0.0.1:9", "--alarm", v}
+		err := Run(Build{"v1.2.3", "abc1234", "2026-08-21T00:00:00Z"})
+		os.Args, flag.CommandLine = prevArgs, prevFlags
+		if err == nil || !strings.Contains(err.Error(), "--alarm") {
+			t.Errorf("--alarm %s: %v, want a refusal", v, err)
+		}
+	}
+}
