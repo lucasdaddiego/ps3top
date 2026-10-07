@@ -14,7 +14,7 @@ game, and mount/launch/eject of the game library, in one dashboard. Built
 ▌ 16  Sample Game™ 2             [MOCK30982] ● mounted                                        38h12m
   17  Sample Quest: The Beginni… [MOCK00103]                                                   6h04m
   18  Fixture Storm™             [MOCK98137]
-── ⏎ mount · p play · u eject · / filter · s sort · t thermals · r refresh · g rescan · q quit ─────
+── ? help ──────────────────────────────────────────────────────────────────────────────────────────
 ```
 
 (A real terminal also carries the cover art panel on the right, at ≥84 cols —
@@ -37,7 +37,8 @@ builds of both in `~/.bin`, `make build` stamped ones in `bin/` (gitignored);
 `make` lists the other targets (run, test, lint, tidy, clean).
 
 Flags: `--host` (default: auto-discover; env `PS3TOP_HOST`) · `--interval`
-(15s, min 5s) · `--alarm` (80°C) · `--no-art` · `--version`. It's a TUI and
+(15s, min 5s) · `--alarm` (80°C, 1–120) · `--no-art` · `--no-patch` (never ask
+Sony about the running game) · `--version`. It's a TUI and
 nothing else — no one-shot or scripting mode. `--help` prints the key
 reference; `?` inside the app shows the same table as a screen (the footer
 used to carry a keybar, which never fit every key at any width and so always
@@ -103,7 +104,8 @@ Header extras: game version (`· v01.15`) next to the running title — with
 patch (one HTTPS GET to `a0.ww.np.dl.playstation.net` per running title per
 session, never to the console; its certificate is Sony's own SHA-1 CA, which
 Go refuses, so the 2004–2037 root is pinned in `patch.go` and the leaf is
-verified by hand) — and the syscon lifetime counters right of the metrics — `∞ 218d · 2709 boots ·
+verified by hand; `--no-patch` skips the check, so no title ID leaves the
+LAN) — and the syscon lifetime counters right of the metrics — `∞ 218d · 2709 boots ·
 65 hard-off` (hard-off = power-ons minus clean power-offs).
 
 ## Sparklines
@@ -163,8 +165,8 @@ documented.
 temperature and fan readings. Those endpoints answer with the entire status
 page, so **the response is the new state**: ps3top adopts it directly (one
 request, not an action plus a re-poll) and flashes the delta that actually
-happened — `fan 26% → 31%`, or `fan unchanged at 100%` when the console
-declines.
+happened — `fan 26% → 31%`, or `nothing changed (fan 100%, manual)` when the
+console declines.
 
 That self-verifying report earned its keep immediately. The page renders one
 slot three different ways depending on who is driving the fan:
@@ -330,9 +332,13 @@ skips the confirm.
   race a fan reply and overwrite the newer reading with the older one; a poll
   that comes due while busy is deferred, not dropped. Fresh connection each
   time (webMAN's server has ~4 session slots — never hold one). Timeouts: 2s
-  dial, 6s per request, 10s client backstop (8s for games and covers).
-  Offline → retry every 15s. Game-list and cover fetches are outside that gate
-  by design — they're idempotent reads that don't carry console state.
+  dial, 6s per request (8s for games and covers, 30s for a rescan), and a 35s
+  client backstop behind them all. Offline → retry every 15s. Game-list and
+  cover fetches are outside that gate by design — they're idempotent reads
+  that don't carry console state; the ISO-folder listings that give the size
+  column go out one at a time, and the PARAM.SFO reads behind the installed
+  games are remembered for the session, so a reload re-reads only folders it
+  hasn't seen.
 - `--host` is parsed as a bare `host[:port]` authority and rejected otherwise:
   a value with a path silently prefixed every endpoint. Redirects to a
   different host are refused, so an action can't be aimed somewhere other than
@@ -527,7 +533,8 @@ frames.
 
 ## Tests
 
-`go test ./...` covers both binaries. binmerge's suite needs no fixtures on
+`make test` (`go vet` + `go test -race ./...`) covers both binaries, and CI runs
+the same with gofmt, staticcheck and govulncheck on every push. binmerge's suite needs no fixtures on
 disk — it builds a three-track Redump set in a temp dir per test — and pins the
 round trip (merge then split gives back byte-identical bins and the original
 cue), the metadata passthrough, every fatal path and the message it prints,
@@ -575,5 +582,6 @@ the structural changes into the synthetic fixtures. Never commit a raw
 capture — `cpursx.ps3` embeds the console's PSID, IDPS, and MAC address (in
 the hidden `id='ht'` span), and `mygames.xml` is your actual library.
 
-Known gap: no XMB-state fixture yet (`InGame` detection keys off the `pid=`
-marker; a capture with the console on XMB would pin the negative case).
+`InGame` keys off three markers — the `pid=` link, the title-ID link and the
+play clock — so a Lite build, which has no pid link, still reads in-game, and
+`cpursx_xmb.html` pins the negative case.
