@@ -21,7 +21,7 @@ func init() {
 // the leaf, then the root. Public certificates, nothing of the console's.
 func sonyChain(t *testing.T) (leaf, root []byte) {
 	t.Helper()
-	b, err := os.ReadFile("testdata/sony_chain.pem")
+	b, err := os.ReadFile("testdata/sony_chain.crt")
 	if err != nil {
 		t.Fatal(err)
 	}
