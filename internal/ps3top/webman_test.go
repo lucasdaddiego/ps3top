@@ -1081,3 +1081,38 @@ func TestParseStatusClockPastADay(t *testing.T) {
 		t.Errorf("fmtClock(1d 01:23:45) = %q, want 25h23m", got)
 	}
 }
+
+// webMAN writes XML, so an ampersand in a title arrives as &amp; and a ™ may
+// arrive as &#x2122;. Entities are decoded at the parser, before sanitize, so
+// "Ratchet &amp; Clank" reads, filters and mounts as the title and path it
+// is, and an entity-encoded ESC still never reaches the terminal. The status
+// page's running title and mounted path get the same treatment.
+func TestEntitiesAreDecodedAtTheParser(t *testing.T) {
+	b, err := os.ReadFile("testdata/mygames_entities.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	games := parseGames(string(b))
+	if len(games) != 2 {
+		t.Fatalf("len(games) = %d, want 2", len(games))
+	}
+	byID := map[string]Game{}
+	for _, g := range games {
+		byID[g.ID] = g
+	}
+	g := byID["MOCK30999"]
+	if g.Title != "Ratchet & Clank™" {
+		t.Errorf("title = %q, want the entities decoded", g.Title)
+	}
+	if g.IconPath != "/dev_hdd0/tmp/wmtmp/Ratchet&Clank.PNG" || g.MountURL != "/mount_ps3/dev_hdd0/PS3ISO/Ratchet&Clank.iso" || g.Path != "/dev_hdd0/PS3ISO/Ratchet&Clank.iso" {
+		t.Errorf("paths kept &amp;: %+v", g)
+	}
+	if e := byID["MOCK30998"]; strings.ContainsRune(e.Title, 0x1b) || strings.Contains(e.Title, "&#") {
+		t.Errorf("an entity-encoded ESC survived: %q", e.Title)
+	}
+	st := parseStatus(`<a href="https://google.com/search?q=x">Ratchet &amp; Clank&#x2122;</a> ` +
+		`<a href="/mount.ps3/dev_hdd0/PS3ISO/Ratchet&amp;Clank.iso">x</a>`)
+	if st.GameTitle != "Ratchet & Clank™" || st.MountedISO != "/dev_hdd0/PS3ISO/Ratchet&Clank.iso" {
+		t.Errorf("status: title %q, mounted %q", st.GameTitle, st.MountedISO)
+	}
+}

@@ -11,6 +11,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net"
 	"net/http"
@@ -608,14 +609,14 @@ func parseStatus(html string) Status {
 		s.FanMode = "manual"
 	}
 	if m := reGameName.FindStringSubmatch(html); m != nil {
-		name := sanitize(m[1])
+		name := sanitize(unescape(m[1]))
 		if v := reGameVer.FindStringSubmatch(name); v != nil {
 			s.GameVer = v[1]
 		}
 		s.GameTitle = strings.TrimSpace(reGameVer.ReplaceAllString(name, ""))
 	}
 	if m := reMounted.FindStringSubmatch(html); m != nil {
-		s.MountedISO = sanitize(m[1])
+		s.MountedISO = sanitize(unescape(m[1]))
 	}
 	// "218d 07:19:14 • 2,709 ON • 2,644 OFF (65)" — the syscon counters
 	if m := reLifeBits.FindStringSubmatch(matchStr(reLifetime, html)); m != nil {
@@ -639,6 +640,18 @@ func parseStatus(html string) Status {
 // real titles carry included. Whitespace controls fold to a space so a wrapped
 // field reads as one line; everything else in C0/C1 and the invisible bidi
 // overrides is dropped.
+// unescape decodes the entities webMAN's XML and HTML carry — "&amp;" for
+// the & in a title, "&#x2122;" for a ™ — so the title reads, filters and
+// mounts as what it is. Always before sanitize, so an entity-encoded ESC
+// is dropped like a raw one. The common case has no entity and allocates
+// nothing.
+func unescape(s string) string {
+	if strings.IndexByte(s, '&') < 0 {
+		return s
+	}
+	return html.UnescapeString(s)
+}
+
 func sanitize(s string) string {
 	if strings.IndexFunc(s, badRune) < 0 {
 		return s // the overwhelming common case — don't allocate for it
@@ -799,16 +812,16 @@ func parseGames(xml string) []Game {
 		for _, f := range reField.FindAllStringSubmatch(e[1], -1) {
 			switch f[1] {
 			case "icon":
-				g.IconPath = sanitize(f[2])
+				g.IconPath = sanitize(unescape(f[2]))
 			case "title":
 				// titles can contain literal newlines (e.g. "MOCK PLANET\nSPECIAL
 				// EDITION"), so collapse whitespace before sanitizing — otherwise
 				// the two halves of the name would be glued together
-				g.Title = sanitize(strings.Join(strings.Fields(f[2]), " "))
+				g.Title = sanitize(strings.Join(strings.Fields(unescape(f[2])), " "))
 			case "module_action":
-				g.MountURL = mountPath(sanitize(f[2]))
+				g.MountURL = mountPath(sanitize(unescape(f[2])))
 			case "info":
-				g.Category, g.ID, g.Ver = splitInfo(sanitize(f[2]))
+				g.Category, g.ID, g.Ver = splitInfo(sanitize(unescape(f[2])))
 			}
 		}
 		// with the setup box ticked the ID is a title suffix instead; strip it
