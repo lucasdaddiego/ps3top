@@ -43,8 +43,11 @@ func artBox(width, listH int, aspect float64, listW int) (cols, rows int) {
 	cols = clamp(width-listW-4, artMinCols, artMaxCols) // 4: box border + gap
 	// taller than a portrait cover at this width and no cover could use the
 	// rows; and a short window gives the width back, since a box wider than
-	// its rows can fill only costs the list columns
-	rows = clamp(listH-2-artTextRows, artMinRows, rowsFor(cols, portraitW, portraitH, aspect))
+	// its rows can fill only costs the list columns. Never past the
+	// diacritics table either: a placeholder row past it has no diacritic to
+	// name it, and near-square cells at a tall window ask for more rows than
+	// the 96-column ceiling implies at 1:2.
+	rows = clamp(listH-2-artTextRows, artMinRows, min(rowsFor(cols, portraitW, portraitH, aspect), len(diacritics)))
 	cols = clamp(colsFor(rows, portraitW, portraitH, aspect), artMinCols, cols)
 	return cols, rows
 }
@@ -73,9 +76,10 @@ func fitCover(w, h, cols, rows int, aspect float64) (int, int) {
 	if w <= 0 || h <= 0 {
 		return cols, rows
 	}
-	// as wide as the box allows at full height, then shrink to the box width
-	c := min(cols, colsFor(rows, w, h, aspect))
-	r := min(rows, rowsFor(c, w, h, aspect))
+	// as wide as the box allows at full height, then shrink to the box width;
+	// the diacritics table bounds both, whatever box was handed in
+	c := min(cols, colsFor(rows, w, h, aspect), len(diacritics))
+	r := min(rows, rowsFor(c, w, h, aspect), len(diacritics))
 	return c, r
 }
 

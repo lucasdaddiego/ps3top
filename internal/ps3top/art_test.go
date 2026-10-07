@@ -290,3 +290,25 @@ func TestRendererPassesPlaceholderCellsThrough(t *testing.T) {
 		t.Error("foreground set after the placeholder cells it should colour")
 	}
 }
+
+// Rows are bounded by the diacritics table too, not only by the portrait
+// aspect: near-square cells (an aspect of 1.0) at a tall window asked for
+// 111 rows of a 96-entry table, and placementRow indexed past its end —
+// index out of range, and ps3top exited.
+func TestArtBoxNeverOutgrowsTheDiacriticsTable(t *testing.T) {
+	for _, aspect := range []float64{1.0, 1.15, 2} {
+		cols, rows := artBox(300, 120, aspect, 60)
+		if rows > len(diacritics) || cols > len(diacritics) {
+			t.Errorf("aspect %v: artBox = %d×%d, past the %d-entry table", aspect, cols, rows, len(diacritics))
+		}
+		c, r := fitCover(260, 300, cols, rows, aspect)
+		if r > len(diacritics) || c > len(diacritics) {
+			t.Errorf("aspect %v: fitCover = %d×%d, past the table", aspect, c, r)
+		}
+		placementRow(1, r-1, c) // the placement's last row must index the table
+	}
+	// fitCover guards on its own: a box handed in past the table is cut to it
+	if c, r := fitCover(260, 300, 200, 200, 1.0); c > len(diacritics) || r > len(diacritics) {
+		t.Errorf("fitCover in a 200×200 box = %d×%d", c, r)
+	}
+}
