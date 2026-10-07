@@ -817,10 +817,13 @@ func (m *model) handleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 				return thermalHistMsg{recs, err}
 			}
 		// arrows drive the fan here: there's no list to navigate on this
-		// screen, so they're free and they're the obvious thing to reach for
-		case "up", "k", "+", "=":
+		// screen, so they're free and they're the obvious thing to reach for.
+		// j and k don't: they scroll the list everywhere else, and a j held
+		// through the list and into t walked the fan down a running game,
+		// unlisted in the help and the footer
+		case "up", "+", "=":
 			return m, m.fanKey(fanUp)
-		case "down", "j", "-", "_":
+		case "down", "-", "_":
 			return m, m.fanKey(fanDown)
 		case "f":
 			if !m.fanReady() {

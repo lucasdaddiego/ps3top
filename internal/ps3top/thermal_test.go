@@ -355,17 +355,25 @@ func TestFanKeysOnlyBindInsideThermal(t *testing.T) {
 	}
 
 	m.handleKey(key("t"))
-	for _, k := range []string{"+", "=", "up", "k"} {
+	for _, k := range []string{"+", "=", "up"} {
 		m.fanBusy, m.fanQueue = false, nil
 		if _, cmd := m.handleKey(key(k)); cmd == nil {
 			t.Errorf("%q stepped the fan nowhere", k)
 		}
 	}
-	for _, k := range []string{"-", "_", "down", "j"} {
+	for _, k := range []string{"-", "_", "down"} {
 		m.fanBusy, m.fanQueue = true, nil // busy: the press should queue, not fire
 		m.handleKey(key(k))
 		if got := m.fanQueue; len(got) != 1 || got[0] != fanDown {
 			t.Errorf("%q queued %v, want [%s]", k, got, fanDown)
+		}
+	}
+	// j and k scroll the list everywhere else and do nothing here: a j held
+	// through the list and into t must not walk the fan down a running game
+	for _, k := range []string{"j", "k"} {
+		m.fanBusy, m.fanQueue = true, nil
+		if _, cmd := m.handleKey(key(k)); cmd != nil || len(m.fanQueue) != 0 {
+			t.Errorf("%q drove the fan from the thermal screen", k)
 		}
 	}
 	m.fanBusy, m.fanQueue, m.st.FanMode = true, nil, "manual"
