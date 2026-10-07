@@ -7,6 +7,7 @@ package ps3top
 import (
 	"context"
 	"fmt"
+	"maps"
 	"path"
 	"sort"
 	"strconv"
@@ -61,6 +62,9 @@ const installedTimeout = 15 * time.Second
 
 func (m *model) fetchGames() tea.Cmd {
 	cli := m.cli
+	// a snapshot of the session's PARAM.SFO reads: the goroutine must not
+	// read a map the loop is folding another pass's reads into
+	known := maps.Clone(m.sfoCache)
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 		defer cancel()
@@ -72,8 +76,8 @@ func (m *model) fetchGames() tea.Cmd {
 		// the XML already read is the library, and they're added to it
 		ictx, icancel := context.WithTimeout(context.Background(), installedTimeout)
 		defer icancel()
-		inst, ierr := cli.InstalledGames(ictx, g)
-		return gamesMsg{games: sortGames(append(g, inst...)), warn: ierr}
+		inst, learned, ierr := cli.InstalledGames(ictx, g, known)
+		return gamesMsg{games: sortGames(append(g, inst...)), warn: ierr, learned: learned}
 	}
 }
 
@@ -305,7 +309,9 @@ func (m *model) quit() tea.Cmd {
 // fetchSizes lists every ISO folder the library draws from — one idempotent
 // GET each, outside the gate, after a games load. The folders come from the
 // games' own paths, so a library spread over PS3ISO and PSXISO costs two
-// requests and one over a single folder costs one.
+// requests and one over a single folder costs one. The listings go out one
+// at a time: they land beside the poll and a cover load, and four at once
+// at a server with ~4 session slots starved whichever came last.
 func (m *model) fetchSizes() tea.Cmd {
 	seen := map[string]bool{}
 	var cmds []tea.Cmd
@@ -325,7 +331,10 @@ func (m *model) fetchSizes() tea.Cmd {
 			return sizesMsg{folder, sizes, err}
 		})
 	}
-	return tea.Batch(cmds...)
+	if len(cmds) == 0 {
+		return nil
+	}
+	return tea.Sequence(cmds...)
 }
 
 // duplicateISOs names library files of identical size — two ISOs the same
@@ -522,6 +531,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.flash = "games list: " + msg.err.Error()
 			return m, m.clearFlashLater()
 		}
+		maps.Copy(m.sfoCache, msg.learned) // the next load skips these folders
 		prevConsole := m.activeConsole()
 		// a reload must not dump the cursor back to row 1 — indexes don't
 		// survive the rebuild, so the selection is re-found by identity after

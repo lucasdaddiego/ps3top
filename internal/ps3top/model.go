@@ -50,6 +50,9 @@ type (
 		games []Game
 		err   error
 		warn  error // the installed-games pass failed; games holds the rest
+		// learned is what the pass read from PARAM.SFOs it hadn't seen,
+		// folded into sfoCache so the next load skips those folders
+		learned map[string]map[string]string
 	}
 	actionMsg struct {
 		label string
@@ -176,6 +179,11 @@ type model struct {
 	// patches is the newest patch version Sony lists per title ID, asked
 	// once per title per session when it's the running game ("" = none)
 	patches map[string]string
+	// sfoCache is each /dev_hdd0/game folder's PARAM.SFO as read this
+	// session (nil for one that wouldn't parse), so a reload reads only the
+	// folders it hasn't seen: forty PSN and DLC folders cost forty requests
+	// per reload before, and the pass ran out its budget as often as not
+	sfoCache map[string]map[string]string
 	// sizes is each library file's exact byte size, keyed by Game.Path,
 	// from the ISO folders' listings after every games load
 	sizes      map[string]int64
@@ -246,6 +254,7 @@ func newModel(cli *Client, host string, interval time.Duration, alarm int, artOn
 		covers:      map[string]coverRef{},
 		coverFailed: map[string]bool{},
 		patches:     map[string]string{},
+		sfoCache:    map[string]map[string]string{},
 		sizes:       map[string]int64{},
 	}
 	if m.hist == nil { // every read path dereferences it; an empty log is the no-op

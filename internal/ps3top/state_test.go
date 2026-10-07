@@ -72,9 +72,9 @@ func msgsOf(cmd tea.Cmd) []tea.Msg {
 		return nil
 	}
 	msg := cmd()
-	if batch, ok := msg.(tea.BatchMsg); ok {
+	if parts := cmdsIn(msg); parts != nil { // a batch or a sequence
 		var out []tea.Msg
-		for _, c := range batch {
+		for _, c := range parts {
 			out = append(out, msgsOf(c)...)
 		}
 		return out

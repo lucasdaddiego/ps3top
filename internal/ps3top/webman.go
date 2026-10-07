@@ -237,10 +237,17 @@ func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("%s: HTTP %d", path, resp.StatusCode)
+		return nil, fmt.Errorf("%s: %w", path, httpError(resp.StatusCode))
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, 4<<20))
 }
+
+// httpError is a response that wasn't 200, kept as a type so a caller can
+// tell a 404 — the console answered: there is no such file — from a request
+// that didn't get through.
+type httpError int
+
+func (e httpError) Error() string { return fmt.Sprintf("HTTP %d", int(e)) }
 
 // fire hits an action endpoint and discards the response body.
 func (c *Client) fire(ctx context.Context, path string) error {
@@ -326,37 +333,49 @@ func parseSizes(html string) map[string]int64 {
 //
 // A failure part-way returns what was read so far with the error, so a slow
 // console costs the tail of the list rather than all of it.
-func (c *Client) InstalledGames(ctx context.Context, lib []Game) ([]Game, error) {
+//
+// known is what earlier passes read, folder by folder (a nil entry: a
+// folder with no usable PARAM.SFO); those folders cost no request. learned
+// is what this pass read, for the caller to fold into known: a folder's
+// PARAM.SFO doesn't change between reloads, and forty PSN and DLC folders
+// at one read each ran out the pass's budget on every r, g and reconnect.
+// A request that didn't get through is not learned, so it's asked again.
+func (c *Client) InstalledGames(ctx context.Context, lib []Game, known map[string]map[string]string) (out []Game, learned map[string]map[string]string, err error) {
 	body, err := c.get(ctx, hddGameDir+"/")
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	have := map[string]bool{}
 	for _, g := range lib {
 		have[g.ID] = true
 	}
 	covers := coversDir(lib)
-	var out []Game
+	learned = map[string]map[string]string{}
 	for _, folder := range parseGameDirs(string(body)) {
 		if have[folder] {
 			continue
 		}
-		b, err := c.get(ctx, hddGameDir+"/"+folder+"/PARAM.SFO")
-		if err != nil {
-			if ctx.Err() != nil {
-				return out, err
+		sfo, seen := known[folder]
+		if !seen {
+			b, err := c.get(ctx, hddGameDir+"/"+folder+"/PARAM.SFO")
+			var status httpError
+			switch {
+			case err != nil && ctx.Err() != nil:
+				return out, learned, err
+			case errors.As(err, &status) && status == http.StatusNotFound:
+				sfo = nil // no PARAM.SFO is no title, and the console said so
+			case err != nil:
+				continue // didn't get through: not learned, asked again next time
+			default:
+				sfo, _ = parseSFO(b) // nil on a file that won't parse: no title
 			}
-			continue // no PARAM.SFO is no title
-		}
-		sfo, err := parseSFO(b)
-		if err != nil {
-			continue
+			learned[folder] = sfo
 		}
 		if g, ok := installedGame(folder, sfo, covers); ok {
 			out = append(out, g)
 		}
 	}
-	return out, nil
+	return out, learned, nil
 }
 
 // The /dev_hdd0/game listing hangs a mount link on every folder row, the way

@@ -216,7 +216,7 @@ func TestInstalledGamesFromTheConsole(t *testing.T) {
 	lib := []Game{{Title: "Twisted Sample", ID: "MOCK98106", Category: "hdd0/PS3ISO",
 		IconPath: "/dev_hdd0//game/MOCK80608/USRDIR/covers/MOCK98106.JPG"}}
 
-	got, err := cli.InstalledGames(context.Background(), lib)
+	got, _, err := cli.InstalledGames(context.Background(), lib, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -256,7 +256,7 @@ func TestInstalledGamesKeepsWhatItReadBeforeTheDeadline(t *testing.T) {
 		<-r.Context().Done() // the client hangs up on its cancelled context
 		return true
 	})
-	got, err := cli.InstalledGames(ctx, nil)
+	got, _, err := cli.InstalledGames(ctx, nil, nil)
 	if err == nil {
 		t.Error("a cancelled pass reported no error")
 	}
@@ -395,5 +395,55 @@ func TestFetchSizesSkipsInstalledGames(t *testing.T) {
 	exec(t, m, m.fetchSizes())
 	if a := asked(); !slices.Equal(a, []string{"/dev_hdd0/PS3ISO/"}) {
 		t.Errorf("requests = %v, want only the ISO folder", a)
+	}
+}
+
+// A reload reads only the folders the session hasn't seen: the first pass
+// costs one PARAM.SFO per unknown folder (a 404 counts as read: the console
+// said there is no file), the second only the listing, and the installed
+// games are still in the list.
+func TestInstalledGamesAreCachedAcrossReloads(t *testing.T) {
+	xml, err := os.ReadFile("testdata/mygames_info_ids.xml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cli, asked := installedConsole(t, func(w http.ResponseWriter, r *http.Request) bool {
+		if strings.HasSuffix(r.URL.Path, "mygames.xml") {
+			w.Write(xml)
+			return true
+		}
+		return false
+	})
+	m := liveModel(t, 120)
+	m.cli = cli
+	sfoReads := func(from int) (n int) {
+		for _, p := range asked()[from:] {
+			if strings.HasSuffix(p, "/PARAM.SFO") {
+				n++
+			}
+		}
+		return n
+	}
+	load := func() {
+		mm, _ := m.Update(m.fetchGames()())
+		m = mm.(*model)
+	}
+	load()
+	first := len(asked())
+	if n := sfoReads(0); n == 0 || len(m.sfoCache) != n {
+		t.Fatalf("the first pass read %d PARAM.SFOs and remembered %d", n, len(m.sfoCache))
+	}
+	load()
+	if n := sfoReads(first); n != 0 {
+		t.Errorf("the second pass re-read %d PARAM.SFOs", n)
+	}
+	var titles []string
+	for _, g := range m.games {
+		titles = append(titles, g.Title)
+	}
+	for _, want := range []string{"Demo Strike®", "Sample Quest Online"} {
+		if !slices.Contains(titles, want) {
+			t.Errorf("%q missing after the cached reload: %v", want, titles)
+		}
 	}
 }
