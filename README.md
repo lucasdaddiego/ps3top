@@ -32,8 +32,9 @@ ps3top              # auto-discovers the console
 ```
 
 Two binaries: `ps3top`, the TUI, and [`binmerge`](#binmerge), a CLI that preps
-PS1 rips for the PSX tab. From a clone: `make install` puts stripped release
-builds of both in `~/.bin`, `make build` stamped ones in `bin/` (gitignored);
+PS1 rips for the PSX tab. From a clone: `make install` builds stripped release
+binaries of both into `bin/` (gitignored) and links them from `~/.bin`; `make build`
+writes unstripped stamped ones to the same files, so it replaces the linked commands;
 `make` lists the other targets (run, test, lint, tidy, clean).
 
 Flags: `--host` (default: auto-discover; env `PS3TOP_HOST`) · `--interval`

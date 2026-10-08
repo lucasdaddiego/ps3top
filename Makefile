@@ -4,7 +4,7 @@
 BINARY      := ps3top
 TOOL        := binmerge
 BIN_DIR     := bin
-INSTALL_DIR := $(HOME)/.bin
+INSTALL_DIR ?= $(HOME)/.bin
 
 # Version metadata, stamped in at link time — both binaries take the same one
 # (cmd/binmerge is package main too, so -X main.version reaches it unchanged),
@@ -26,7 +26,7 @@ RELEASE := -trimpath -ldflags "-s -w $(STAMP)"
 help: ## List the targets (the default goal)
 	@awk 'BEGIN {FS = ":.*?## "} /^[a-zA-Z_-]+:.*?## / {printf "  \033[36m%-8s\033[0m %s\n", $$1, $$2}' $(MAKEFILE_LIST)
 
-build: ## Compile both binaries into bin/
+build: ## Compile both binaries into bin/ (unstripped; replaces the ~/.bin-linked commands)
 	@mkdir -p $(BIN_DIR)
 	go build -ldflags "$(STAMP)" -o $(BIN_DIR)/$(BINARY) .
 	go build -ldflags "$(STAMP)" -o $(BIN_DIR)/$(TOOL) ./cmd/$(TOOL)
@@ -47,11 +47,12 @@ tidy: ## Update dependencies to their latest minor/patch and tidy go.mod
 	go get -u ./...
 	go mod tidy
 
-install: ## Install stripped release binaries into ~/.bin
-	@mkdir -p $(INSTALL_DIR)
-	go build $(RELEASE) -o "$(INSTALL_DIR)/$(BINARY)" .
-	go build $(RELEASE) -o "$(INSTALL_DIR)/$(TOOL)" ./cmd/$(TOOL)
-	@echo "installed $(INSTALL_DIR)/$(BINARY) and $(INSTALL_DIR)/$(TOOL)"
+install: ## Build stripped release binaries into bin/ and link them from ~/.bin
+	@mkdir -p $(BIN_DIR) "$(INSTALL_DIR)"
+	go build $(RELEASE) -o $(BIN_DIR)/$(BINARY) .
+	go build $(RELEASE) -o $(BIN_DIR)/$(TOOL) ./cmd/$(TOOL)
+	ln -sfn "$(CURDIR)/$(BIN_DIR)/$(BINARY)" "$(INSTALL_DIR)/$(BINARY)"
+	ln -sfn "$(CURDIR)/$(BIN_DIR)/$(TOOL)" "$(INSTALL_DIR)/$(TOOL)"
 
-clean: ## Remove the local build directory
+clean: ## Remove the local build directory (the ~/.bin links then dangle until make install)
 	rm -rf $(BIN_DIR)

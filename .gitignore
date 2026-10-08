@@ -1,2 +1,2 @@
-# local builds (make build); installs go to ~/.bin
+# builds (make build / make install); ~/.bin/ps3top and ~/.bin/binmerge link here
 /bin/
