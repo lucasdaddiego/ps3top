@@ -751,6 +751,24 @@ func TestClientRefusesOffHostRedirects(t *testing.T) {
 	}
 }
 
+// A folder name or a pkg path that could reshape the URL is refused before any
+// request goes out: PlayFolder takes one path segment, Install an absolute
+// /dev_ path with no query, fragment or "..".
+func TestInstallAndPlayFolderRefuseBadArguments(t *testing.T) {
+	cli := NewClient("127.0.0.1:1")
+	ctx := context.Background()
+	for _, p := range []string{"", "x.pkg", "dev_hdd0/packages/x.pkg", "/dev_hdd0/../x.pkg", "/dev_hdd0/packages/x.pkg?y"} {
+		if err := cli.Install(ctx, p); err == nil {
+			t.Errorf("Install accepted %q", p)
+		}
+	}
+	for _, f := range []string{"", "HDSH00001/x", "a?b", "a&b", "a%2Fb"} {
+		if err := cli.PlayFolder(ctx, f); err == nil {
+			t.Errorf("PlayFolder accepted %q", f)
+		}
+	}
+}
+
 // Every action is a GET at a fixed path — webMAN's API, not a choice — so the
 // thing worth pinning is that each wrapper addresses the endpoint it claims to
 // and that a non-200 is an error rather than a silent success.
@@ -789,6 +807,10 @@ func TestActionEndpoints(t *testing.T) {
 		{"restart game", func() error { return cli.ReloadGame(ctx) }, "/xmb.ps3$reloadgame"},
 		// the message is path-escaped, so spaces and slashes can't reshape the URL
 		{"popup", func() error { return cli.Popup(ctx, "hello there/x") }, "/popup.ps3/hello%20there%2Fx"},
+		// the two ps3run entry points: an installed folder by name, a pkg by its console path
+		{"play folder", func() error { return cli.PlayFolder(ctx, "HDSH00001") }, "/play.ps3?HDSH00001"},
+		{"install", func() error { return cli.Install(ctx, "/dev_hdd0/packages/PS3-Health-2.0.1-rc4.pkg") },
+			"/install.ps3/dev_hdd0/packages/PS3-Health-2.0.1-rc4.pkg"},
 	}
 	for _, c := range cases {
 		got = ""

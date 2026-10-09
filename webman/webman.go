@@ -535,6 +535,31 @@ func (c *Client) Play(ctx context.Context, g Game) error {
 	return c.fire(ctx, "/play.ps3"+g.Path)
 }
 
+// PlayFolder starts a title installed under /dev_hdd0/game by its folder name
+// (the title id: HDSH00001 for PS3 Health) — the form Play uses for an
+// installed Game, without a Game value. A full-build endpoint, like Play's
+// argument. ps3run starts a homebrew app with it; whether webMAN starts a
+// homebrew folder the way it starts an installed game is not checked on a
+// console yet.
+func (c *Client) PlayFolder(ctx context.Context, folder string) error {
+	if folder == "" || strings.ContainsAny(folder, "/?&#%") {
+		return fmt.Errorf("bad folder name %q", folder)
+	}
+	return c.fire(ctx, "/play.ps3?"+folder)
+}
+
+// Install asks webMAN to install a pkg that is already on the console:
+// /install.ps3<path> (upstream include/cmd/install.h), with the pkg's absolute
+// console path, as /dev_hdd0/packages/x.pkg. A 200 means webMAN took the
+// request, not that the pkg installed — a caller reads the installed files
+// back to know. Not checked on a console yet.
+func (c *Client) Install(ctx context.Context, pkgPath string) error {
+	if !strings.HasPrefix(pkgPath, "/dev_") || strings.Contains(pkgPath, "..") || strings.ContainsAny(pkgPath, "?#") {
+		return fmt.Errorf("bad pkg path %q", pkgPath)
+	}
+	return c.fire(ctx, "/install.ps3"+pkgPath)
+}
+
 // ExitGame quits the running game back to the XMB; ReloadGame restarts it.
 // Both are the links webMAN's own status page hangs next to the running
 // title ("$exit" / "$reloadgame" — the $ is literal, not a shell variable).

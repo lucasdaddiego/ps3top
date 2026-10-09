@@ -389,7 +389,10 @@ skips the confirm.
   webMAN can't serve is remembered for the session (`no cover` in the panel)
   instead of being re-requested on every visit; `r`/`g` retry it.
 - Actions: `/mount_ps3/<path>` · `/mount_ps3/unmount` · `/play.ps3` (launch
-  mounted) · `/play.ps3/<path>` (mount+launch) · `/popup.ps3/<text>` ·
+  mounted) · `/play.ps3/<path>` (mount+launch) · `/play.ps3?<folder>` (start an
+  installed title by its folder, `webman.PlayFolder`) · `/install.ps3<pkg-path>`
+  (install a pkg already on the console, `webman.Install`; these two serve
+  ps3run, the TUI does not send them) · `/popup.ps3/<text>` ·
   `/refresh.ps3?xmb` (library rescan) · `/xmb.ps3$exit` (quit game to XMB)
   · `/xmb.ps3$reloadgame` (restart game) · `/shutdown.ps3` · `/restart.ps3` ·
   `/cpursx.ps3?up|dn|mode` (fan; the reply is the new status page, so these
