@@ -1,0 +1,83 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml">
+<meta http-equiv="Content-type" content="text/html;charset=UTF-8">
+<META HTTP-EQUIV="CACHE-CONTROL" CONTENT="NO-CACHE">
+<head>
+<title>wMAN MOD 1.47.48</title>
+<link rel="stylesheet" type="text/css" href="/dev_hdd0/xmlhost/game_plugin/sman.css"/>
+<script src="/dev_hdd0/xmlhost/game_plugin/jquery.min.js"></script>
+<script src="/dev_hdd0/xmlhost/game_plugin/jquery-ui.min.js"></script>
+<script src="/dev_hdd0/xmlhost/game_plugin/sman.js"></script>
+<script>$(function(){$("#mg").sortable();});</script>
+</head>
+<body bgcolor="#303030" onresize="resizeEvent()">
+<div class="top_line">&nbsp;</div>
+<div id="smv" class="smv"><a style="cursor:pointer" onclick="home();return false;">wMAN MOD</a></div>
+
+<font face="Helvetica">
+<div id="rxml"><H1 id="msg1">Refreshing XML <script>dot();</script></H1></div>
+<div id="rhtm"><H1 id="msg2">Loading Games <script>dot();</script></H1></div>
+<div id="wmsg"><H1><script>dot();</script></H1></div>
+
+<script>
+function find()
+{
+	var s=prompt('Search:','');
+	if(s){
+		document.getElementById('rhtm').style.display='block';
+		document.getElementById('rhtm').innerHTML='<h1>Searching...</h1>';
+		var url=self.location.href;
+		if(url.indexOf('etmem.ps3mapi')>0||url.indexOf('/hexview.ps3')>0){
+			var pos=url.indexOf('&find=');
+			if(pos>0)
+				self.location=url.substring(0,pos)+'&find='+escape(s);
+			else
+				self.location+='&find='+escape(s);
+		}
+		else if(url.indexOf('/peek')>0||url.indexOf('/poke')>0||url.indexOf('/find')>0){
+			var pos=url.indexOf('=');
+			if(pos>0)
+				self.location=url.substring(0,pos).replace('/peek','/find').replace('/poke','/find')+'='+escape(s);
+			else
+				self.location=url.replace('/peek','/find').replace('/poke','/find')+'='+escape(s);
+		}
+		else
+			self.location+='?'+escape(s);
+	}
+}
+</script>
+
+<div id="top_action">
+	<div id="top_buttons">
+	<a onclick="document.getElementById('rxml').style.display='block';self.location=(event.ctrlKey)?'/refresh.ps3;/sman.ps3':'/refresh.ps3?xmb;/sman.ps3';" class="t_menu"><span id="refresh">Refresh</span></a>
+	<a onclick="self.location=(event.ctrlKey)?'/mount_ps3/unmount?/sman.ps3':'/mount.ps3/unmount?/sman.ps3';" class="t_menu"><span id="eject">Eject</span></a>
+	<a onclick="self.location='/insert.ps3';" class="t_menu"><span id="insert">Insert</span></a>
+	<a onclick="self.location='/restart.ps3';" class="t_menu"><span id="restart">Restart</span></a>
+	<a onclick="self.location='/shutdown.ps3';" class="t_menu"><span id="shutdown">Shutdown</span></a>
+	</div>
+
+	<div id="cpursx" style="position:absolute;top:5px;right:150px;max-width:220px;overflow:hidden;">
+	<iframe src="/cpursx_ps3" frameborder="0" scrolling="no" seamless="seamless" style="border:none;height:35px;top:5px;overflow:hidden;"></iframe>
+	</div>
+
+	<span style="position:absolute;float:right;right:-5px;top:10px;">
+	<a onclick="if(self.location.href.indexOf('/cpursx.ps3')>0){self.location='/cpursx.html';}else{find();}"><span id="ngames"></span> &nbsp; <img src="/dev_hdd0/tmp/wm_icons/find.png" style="position:relative;top:6px;"></a></font>
+	</span>
+</div>
+
+<div id="left_action">
+	<a onclick="document.getElementById('rhtm').style.display='block';self.location=(event.ctrlKey)?'/index.ps3':'/sman.ps3?';" class="b_games"><span id="games">Games</span></a>
+	<a onclick="self.location='/';" class="b_files"><span id="files">Files</span></a>
+	<a onclick="self.location='/games.ps3';" class="b_cflow">Coverflow</a>
+	<a onclick="self.location='/home.ps3mapi/sman.ps3';" class="b_ps3mapi">PS3MAPI</a>
+	<a onclick="self.location='/setup.ps3/sman.ps3';" class="b_setup" style="color:#0FF;"><span id="setup">Setup</span></a>
+	<a onclick="self.location=(self.location.href.indexOf('/cpursx.ps3')>0)?'/tempc.html':'/cpursx.ps3?/sman.ps3';" class="b_cpursx">CPU/RSX</a>
+</div>
+</font>
+
+<script>
+resizeEvent();
+</script>
+
+<div id="content" class="propfont">
+<meta http-equiv="refresh" content="15;URL=/cpursx.ps3?/sman.ps3"><noscript><h1 style='color:#f03'>Error! Javascript Disabled</h1></noscript> [<a href="/klic.ps3">KLIC</a>] [<a href="/sysbgm.ps3">BGM</a>] [<a href="/videorec.ps3">REC</a>] [<a href="/xmb.ps3$reloadgame">Reload</a>] [<a href="/xmb.ps3$exit">Exit</a>]<hr><span style="position:relative;top:-20px;"><H2><a href="https://a0.ww.np.dl.playstation.net/tpl/np/MOCK30982/MOCK30982-ver.xml" target="_blank">MOCK30982</a> <a href="http://google.com/search?q=Sample Game™ 2">Sample Game™ 2 01.15</a> &nbsp; <a href="/dev_hdd0/game//MOCK30982"><img src="/dev_hdd0/game//MOCK30982/ICON0.PNG" height="60" border=0 style="position:relative;top:20px;"></a> <a href="/gameplugin.ps3mapi?proc=0x1010200"><small>pid=01010200</small></a></H2></span><hr><font size="42px"><b><a class="s" href="/cpursx.ps3?up">CPU: 58°C <small>[Fan control: SYSCON]</small><br>RSX: 61°C</a><hr><a class="s" href="/cpursx.ps3?dn">CPU: 136°F <br>RSX: 141°F</a><hr><a class="s" href="/games.ps3">MEM: 1,152 KB </a><br><a href="/dev_hdd0">HDD:  123.4 GB free</a><hr><a class="s" href="/cpursx.ps3?mode">FAN SPEED:  26% (0x42)</a><br><hr><label title="Play">&#9737;</label> 01:23:45<br><a href="/dev_hdd0/home/00000001"><label title="Startup"><img src='/dev_hdd0/tmp/wm_icons/time.png' border=0 style='position:relative;top:8px;'></label> 01:24:02</a></font><H1><img src='/dev_hdd0/tmp/wm_icons/power.png' style='position:relative;top:8px;'> 100d 01:02:03 • 1,234 ON • 1,200 OFF (34)</H1><hr><font size="3"><a href="/dev_bdvd">/dev_bdvd</a> -> <a class="f" href="/dev_hdd0/">/dev_hdd0</a>/<a class="f" href="/dev_hdd0/PS3ISO/">PS3ISO</a>/<a href="/mount.ps3/dev_hdd0/PS3ISO/SampleGame2.iso">SampleGame2.iso</a></font><hr><h2><input type=button onclick="$$('ht').style.display='block';window.stop();" value='&#x25BC;'> <a class="s" href="/setup.ps3">NOR Firmware: 4.93 CEX PS3HEN 3.5.0<br><span id='ht' style='display:none;'>PSID LV2 : 00000000000000000000000000000000<hr>IDPS LV2 : 000000010088000F0000000000000000<br>IDPS EID0: 000000010088000F0000000000000000<br>MAC Addr : 00:00:00:00:00:00 - 192.168.0.100 LAN</span></h2></a></b><hr color="blue"/>webMAN 1.47.48q MOD - Simple Web Server (NTFS) [Full] <p><div style="position:fixed;right:20px;bottom:10px;opacity:0.2"><a href="/dev_bdvd"><img src="/dev_hdd0/tmp/wm_icons/icon_wm_ps3.png" height="12"></a> <a href="#Top">&#9650;</a></div><b><script src="/dev_hdd0/xmlhost/game_plugin/common.js"></script></font></body></html>

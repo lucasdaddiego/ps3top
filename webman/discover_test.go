@@ -1,4 +1,4 @@
-package ps3top
+package webman
 
 import (
 	"context"
@@ -64,15 +64,15 @@ func TestIsWebMANHonoursTheSweepContext(t *testing.T) {
 }
 
 func TestSubnetNames(t *testing.T) {
-	got := subnetNames([]subnet{
-		{base: net.IPv4(192, 168, 1, 0).To4()},
-		{base: net.IPv4(10, 0, 0, 0).To4()},
+	got := SubnetNames([]Subnet{
+		{Base: net.IPv4(192, 168, 1, 0).To4()},
+		{Base: net.IPv4(10, 0, 0, 0).To4()},
 	})
 	if got != "192.168.1.0/24, 10.0.0.0/24" {
-		t.Errorf("subnetNames = %q", got)
+		t.Errorf("SubnetNames = %q", got)
 	}
-	if got := subnetNames(nil); got != "" {
-		t.Errorf("subnetNames(nil) = %q, want empty", got)
+	if got := SubnetNames(nil); got != "" {
+		t.Errorf("SubnetNames(nil) = %q, want empty", got)
 	}
 }
 
@@ -82,25 +82,25 @@ func TestSubnetNames(t *testing.T) {
 func TestLocalSubnets(t *testing.T) {
 	seen := map[string]bool{}
 	for _, sn := range localSubnets() {
-		if !sn.base.IsPrivate() {
-			t.Errorf("swept a non-private network: %v", sn.base)
+		if !sn.Base.IsPrivate() {
+			t.Errorf("swept a non-private network: %v", sn.Base)
 		}
-		if sn.base.IsLoopback() {
-			t.Errorf("swept loopback: %v", sn.base)
+		if sn.Base.IsLoopback() {
+			t.Errorf("swept loopback: %v", sn.Base)
 		}
-		if sn.base.To4() == nil {
-			t.Errorf("non-IPv4 subnet: %v", sn.base)
+		if sn.Base.To4() == nil {
+			t.Errorf("non-IPv4 subnet: %v", sn.Base)
 		}
-		if sn.base[3] != 0 {
-			t.Errorf("base %v isn't a /24 network address", sn.base)
+		if sn.Base[3] != 0 {
+			t.Errorf("base %v isn't a /24 network address", sn.Base)
 		}
-		if !sn.self.IsPrivate() {
-			t.Errorf("self %v isn't in a private range", sn.self)
+		if !sn.Self.IsPrivate() {
+			t.Errorf("self %v isn't in a private range", sn.Self)
 		}
-		if seen[sn.base.String()] {
-			t.Errorf("duplicate subnet %v", sn.base)
+		if seen[sn.Base.String()] {
+			t.Errorf("duplicate subnet %v", sn.Base)
 		}
-		seen[sn.base.String()] = true
+		seen[sn.Base.String()] = true
 	}
 }
 
@@ -113,17 +113,17 @@ func TestSweepFindsTheConsole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func(p string) { sweepPort = p }(sweepPort)
-	sweepPort = port
+	defer func(p string) { SweepPort = p }(SweepPort)
+	SweepPort = port
 
-	sn := subnet{base: net.IPv4(127, 0, 0, 0).To4(), self: net.IPv4(127, 0, 0, 99).To4()}
-	if got := sweep([]subnet{sn}); got != "127.0.0.1" {
+	sn := Subnet{Base: net.IPv4(127, 0, 0, 0).To4(), Self: net.IPv4(127, 0, 0, 99).To4()}
+	if got := sweep([]Subnet{sn}); got != "127.0.0.1" {
 		t.Errorf("sweep = %q, want 127.0.0.1", got)
 	}
 
 	// and a subnet with no console on it comes back empty rather than hanging
-	sweepPort = "1" // nothing listens here
-	if got := sweep([]subnet{sn}); got != "" {
+	SweepPort = "1" // nothing listens here
+	if got := sweep([]Subnet{sn}); got != "" {
 		t.Errorf("sweep of an empty subnet = %q, want none", got)
 	}
 }
@@ -135,16 +135,16 @@ func TestSweepFindsTheConsole(t *testing.T) {
 // address is not "a host to try", it's a sweep.
 func TestDiscoverHostTrustsTheCache(t *testing.T) {
 	loopbackOnly(t)
-	defer func(p string) { sweepPort = p }(sweepPort)
-	sweepPort = "1" // nothing listens: any sweep finds nothing, fast
+	defer func(p string) { SweepPort = p }(SweepPort)
+	SweepPort = "1" // nothing listens: any sweep finds nothing, fast
 
 	cache := filepath.Join(t.TempDir(), "host")
 	if err := os.WriteFile(cache, []byte("127.0.0.1:1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got, err := discoverHost(cache)
+	got, err := DiscoverHost(cache)
 	if err != nil || got != "127.0.0.1:1" {
-		t.Errorf("discoverHost = %q, %v; want the cached address back", got, err)
+		t.Errorf("DiscoverHost = %q, %v; want the cached address back", got, err)
 	}
 }
 
@@ -152,10 +152,10 @@ func TestDiscoverHostTrustsTheCache(t *testing.T) {
 // machine's real LAN.
 func loopbackOnly(t *testing.T) {
 	t.Helper()
-	prev := localNets
-	t.Cleanup(func() { localNets = prev })
-	localNets = func() []subnet {
-		return []subnet{{base: net.IPv4(127, 0, 0, 0).To4(), self: net.IPv4(127, 0, 0, 99).To4()}}
+	prev := LocalNets
+	t.Cleanup(func() { LocalNets = prev })
+	LocalNets = func() []Subnet {
+		return []Subnet{{Base: net.IPv4(127, 0, 0, 0).To4(), Self: net.IPv4(127, 0, 0, 99).To4()}}
 	}
 }
 
@@ -163,15 +163,15 @@ func loopbackOnly(t *testing.T) {
 // into a URL on trust — it falls through to a sweep like any other stale entry.
 func TestDiscoverHostRejectsAJunkCache(t *testing.T) {
 	loopbackOnly(t)
-	defer func(p string) { sweepPort = p }(sweepPort)
-	sweepPort = "1" // nothing listens; the fallback sweep finds nothing, fast
+	defer func(p string) { SweepPort = p }(SweepPort)
+	SweepPort = "1" // nothing listens; the fallback sweep finds nothing, fast
 
 	dir := t.TempDir()
 	cache := filepath.Join(dir, "host")
 	if err := os.WriteFile(cache, []byte("127.0.0.1:8080/evil?x=1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := discoverHost(cache); err == nil {
+	if got, err := DiscoverHost(cache); err == nil {
 		t.Errorf("junk cache entry was accepted as %q", got)
 	}
 }
@@ -185,16 +185,16 @@ func TestDiscoverHostSweepsAndCaches(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer func(p string) { sweepPort = p }(sweepPort)
-	sweepPort = port
+	defer func(p string) { SweepPort = p }(SweepPort)
+	SweepPort = port
 
 	cache := filepath.Join(t.TempDir(), "sub", "host") // parent doesn't exist yet
-	got, err := discoverHost(cache)
+	got, err := DiscoverHost(cache)
 	if err != nil {
-		t.Fatalf("discoverHost: %v", err)
+		t.Fatalf("DiscoverHost: %v", err)
 	}
 	if got != "127.0.0.1" {
-		t.Errorf("discoverHost = %q, want 127.0.0.1", got)
+		t.Errorf("DiscoverHost = %q, want 127.0.0.1", got)
 	}
 	b, err := os.ReadFile(cache)
 	if err != nil {
@@ -206,11 +206,11 @@ func TestDiscoverHostSweepsAndCaches(t *testing.T) {
 }
 
 func TestDiscoverHostWithNoNetwork(t *testing.T) {
-	prev := localNets
-	t.Cleanup(func() { localNets = prev })
-	localNets = func() []subnet { return nil }
+	prev := LocalNets
+	t.Cleanup(func() { LocalNets = prev })
+	LocalNets = func() []Subnet { return nil }
 
-	_, err := discoverHost(filepath.Join(t.TempDir(), "host"))
+	_, err := DiscoverHost(filepath.Join(t.TempDir(), "host"))
 	if err == nil {
 		t.Fatal("no private network reported success")
 	}

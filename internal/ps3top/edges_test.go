@@ -2,7 +2,6 @@ package ps3top
 
 import (
 	"bytes"
-	"context"
 	"image"
 	"image/png"
 	"net/http"
@@ -727,58 +726,6 @@ func TestDecodeCoverRejectsImplausibleDimensions(t *testing.T) {
 	}
 	if _, err := decodeCover(buf.Bytes()); err == nil {
 		t.Errorf("a %dpx-wide cover was accepted", coverMaxPx+1)
-	}
-}
-
-// --- client edges ---
-
-func TestNormalizeHostRejectsAnEmptyHostname(t *testing.T) {
-	if got, err := normalizeHost(":80"); err == nil {
-		t.Errorf("a port with no host was accepted as %q", got)
-	}
-}
-
-func TestRedirectChainIsBounded(t *testing.T) {
-	var srv *httptest.Server
-	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// same origin every time, so only the hop count can stop it
-		http.Redirect(w, r, srv.URL+"/again", http.StatusFound)
-	}))
-	defer srv.Close()
-
-	cli := NewClient(strings.TrimPrefix(srv.URL, "http://"))
-	if _, err := cli.get(context.Background(), "/start"); err == nil {
-		t.Error("an endless same-origin redirect loop was followed to completion")
-	}
-}
-
-func TestSanitizeDropsBidiControls(t *testing.T) {
-	for name, in := range map[string]string{
-		"LRM":     "a\u200eb",
-		"RLM":     "a\u200fb",
-		"isolate": "a\u2066b\u2069",
-	} {
-		if got := sanitize(in); got != "ab" {
-			t.Errorf("%s: sanitize(%q) = %q, want %q", name, in, got, "ab")
-		}
-	}
-}
-
-// A franchise where one entry has no title ID can't use the release-order hint:
-// the entry without an ID would sort against everything by title while its
-// siblings sorted by ID, which is how the cycle got in.
-func TestFranchiseWithAnIDlessMemberFallsBackToTitles(t *testing.T) {
-	games := []Game{
-		{Title: "Saga: Zulu", ID: "MOCK00001", Category: "hdd0/PS3ISO"},
-		{Title: "Saga: Alpha", ID: "MOCK00002", Category: "hdd0/PS3ISO"},
-		{Title: "Saga: Mike", ID: "", Category: "hdd0/PSXISO"}, // PSX entries carry none
-	}
-	keys := gameKeys(games)
-	if keys[0].id != "" || keys[1].id != "" {
-		t.Error("the ID hint stayed on for a franchise with an ID-less member")
-	}
-	if !keys[1].less(keys[0]) {
-		t.Error("fallback isn't title order")
 	}
 }
 

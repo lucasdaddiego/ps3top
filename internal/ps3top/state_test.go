@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/lucasdaddiego/ps3top/webman"
 )
 
 // exec runs a tea.Cmd and hands its message back through Update, which is what
@@ -149,6 +152,17 @@ func TestInitFetchesStatusThenGamesOnTheWayOnline(t *testing.T) {
 	}
 }
 
+// loopbackOnly points discovery at 127.0.0.0/24 so no test ever sweeps the
+// machine's real LAN.
+func loopbackOnly(t *testing.T) {
+	t.Helper()
+	prev := webman.LocalNets
+	t.Cleanup(func() { webman.LocalNets = prev })
+	webman.LocalNets = func() []webman.Subnet {
+		return []webman.Subnet{{Base: net.IPv4(127, 0, 0, 0).To4(), Self: net.IPv4(127, 0, 0, 99).To4()}}
+	}
+}
+
 // A console that's off at launch used to be fatal (discovery refused to start)
 // and, once online, listless (the one games fetch had failed and nothing
 // retried it). Now an auto-discovered address that doesn't answer gets one
@@ -156,8 +170,8 @@ func TestInitFetchesStatusThenGamesOnTheWayOnline(t *testing.T) {
 // list. A --host the user typed is never second-guessed by a sweep.
 func TestOfflineCachedHostSweepsOncePerOutage(t *testing.T) {
 	loopbackOnly(t)
-	defer func(p string) { sweepPort = p }(sweepPort)
-	sweepPort = "1" // the sweep finds nothing, fast
+	defer func(p string) { webman.SweepPort = p }(webman.SweepPort)
+	webman.SweepPort = "1" // the sweep finds nothing, fast
 
 	m := liveModel(t, 120)
 	m.cli = NewClient("127.0.0.1:1")
@@ -212,12 +226,12 @@ func TestSweepAdoptsTheNewAddress(t *testing.T) {
 	m := liveModel(t, 120)
 	m.online = false
 	m.hostCache = filepath.Join(t.TempDir(), "sub", "host")
-	host := strings.TrimPrefix(liveServer(t).base, "http://")
+	host := liveServer(t).Host()
 
 	mm, cmd := m.Update(discoverMsg{host: host})
 	m = mm.(*model)
-	if m.host != host || m.cli.base != "http://"+host {
-		t.Errorf("host = %q / client %q, want %q", m.host, m.cli.base, host)
+	if m.host != host || m.cli.Host() != host {
+		t.Errorf("host = %q / client %q, want %q", m.host, m.cli.Host(), host)
 	}
 	if b, err := os.ReadFile(m.hostCache); err != nil || strings.TrimSpace(string(b)) != host {
 		t.Errorf("new address not cached: %q, %v", b, err)

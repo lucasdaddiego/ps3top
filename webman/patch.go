@@ -1,4 +1,4 @@
-package ps3top
+package webman
 
 // Patch-available check for the running game. Sony still serves the PS3
 // title-update index: https://a0.ww.np.dl.playstation.net/tpl/np/<ID>/<ID>-ver.xml
@@ -157,13 +157,13 @@ var patchClient = &http.Client{
 	},
 }
 
-// patchLookup is the seam the model calls through; tests stub it so no
-// suite run ever reaches Sony.
-var patchLookup = latestPatch
+// PatchLookup is the lookup the TUI calls through. It is a test hook: tests
+// stub it so no suite run ever reaches Sony.
+var PatchLookup = LatestPatch
 
-// latestPatch asks Sony for the newest patch version of a title ("" when
+// LatestPatch asks Sony for the newest patch version of a title ("" when
 // the title has no patches — the index 404s for those).
-func latestPatch(ctx context.Context, id string) (string, error) {
+func LatestPatch(ctx context.Context, id string) (string, error) {
 	if !reID.MatchString(id) {
 		return "", fmt.Errorf("not a title ID: %q", id)
 	}
@@ -204,7 +204,7 @@ func newestVersion(xml string) string {
 	return best
 }
 
-// patchBehind says whether installed trails latest, both "NN.NN".
-func patchBehind(installed, latest string) bool {
+// PatchBehind says whether installed trails latest, both "NN.NN".
+func PatchBehind(installed, latest string) bool {
 	return installed != "" && latest != "" && strings.Compare(installed, latest) < 0
 }

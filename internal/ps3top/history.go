@@ -27,6 +27,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"github.com/lucasdaddiego/ps3top/webman"
 )
 
 // sessionRec is one line of history.ndjson. Append-only, one JSON object per
@@ -67,7 +69,7 @@ func statKey(id, title string) string {
 	if id != "" {
 		return id
 	}
-	return "title:" + sortKey(title)
+	return "title:" + webman.SortKey(title)
 }
 
 // dataDir is deliberately NOT the cache dir: covers are disposable and cache

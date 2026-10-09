@@ -366,7 +366,7 @@ func TestMarkupWarningFiresOnGettingWorse(t *testing.T) {
 		for i := 0; i < n; i++ {
 			fields[i]()
 		}
-		if got := st.missing(); got != n {
+		if got := st.Missing(); got != n {
 			t.Fatalf("fixture builder wrong: missing() = %d, want %d", got, n)
 		}
 		return st

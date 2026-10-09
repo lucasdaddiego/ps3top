@@ -13,6 +13,8 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+
+	"github.com/lucasdaddiego/ps3top/webman"
 )
 
 const (
@@ -121,7 +123,7 @@ func (m *model) header() string {
 			state += dimSt.Render(" v" + m.st.GameVer)
 			// Sony still lists the patches; when the installed version
 			// trails the newest, say so where the version already is
-			if latest := m.patches[m.st.GameID]; patchBehind(m.st.GameVer, latest) {
+			if latest := m.patches[m.st.GameID]; webman.PatchBehind(m.st.GameVer, latest) {
 				state += warnSt.Render(" → " + latest + " available")
 			}
 		}
@@ -370,7 +372,7 @@ func fmtClock(c string) string {
 	if strings.Count(c, ":") != 2 {
 		return c
 	}
-	return fmtDur(clockSecs(c))
+	return fmtDur(webman.ClockSecs(c))
 }
 
 // tabLine is the single separator line: console tabs (chronological) on the

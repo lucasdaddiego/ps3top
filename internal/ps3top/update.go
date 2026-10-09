@@ -16,6 +16,8 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+
+	"github.com/lucasdaddiego/ps3top/webman"
 )
 
 const (
@@ -77,7 +79,7 @@ func (m *model) fetchGames() tea.Cmd {
 		ictx, icancel := context.WithTimeout(context.Background(), installedTimeout)
 		defer icancel()
 		inst, learned, ierr := cli.InstalledGames(ictx, g, known)
-		return gamesMsg{games: sortGames(append(g, inst...)), warn: ierr, learned: learned}
+		return gamesMsg{games: webman.SortGames(append(g, inst...)), warn: ierr, learned: learned}
 	}
 }
 
@@ -409,7 +411,7 @@ func (m *model) checkPatch(st Status) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		latest, err := patchLookup(ctx, id)
+		latest, err := webman.PatchLookup(ctx, id)
 		return patchMsg{id, latest, err}
 	}
 }
@@ -423,7 +425,7 @@ func (m *model) sweepLAN() tea.Cmd {
 		return nil
 	}
 	m.scanning, m.swept = true, true
-	m.scanNets = subnetNames(localNets())
+	m.scanNets = webman.SubnetNames(webman.LocalNets())
 	return func() tea.Msg {
 		host, err := findConsole(nil)
 		return discoverMsg{host, err}
@@ -509,14 +511,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// said nothing when the markup genuinely broke hours later. Comparing
 		// against the previous count also keeps a steady-state break quiet
 		// instead of flashing every 15 seconds.
-		if n := msg.st.missing(); n > m.prevMissing {
+		if n := msg.st.Missing(); n > m.prevMissing {
 			m.flash = fmt.Sprintf("status page: %d of %d fields not found — webMAN markup may have changed", n, statusFields)
 			flashed = true
 		}
 		// deliberately not updated on the error path above: an outage isn't a
 		// markup change, and recovering from one into the same degraded state
 		// shouldn't re-warn
-		m.prevMissing = msg.st.missing()
+		m.prevMissing = msg.st.Missing()
 		if flashed {
 			cmds = append(cmds, m.clearFlashLater())
 		}

@@ -104,7 +104,7 @@ Header extras: game version (`· v01.15`) next to the running title — with
 `→ 01.17 available` in yellow when Sony's title-update index lists a newer
 patch (one HTTPS GET to `a0.ww.np.dl.playstation.net` per running title per
 session, never to the console; its certificate is Sony's own SHA-1 CA, which
-Go refuses, so the 2004–2037 root is pinned in `patch.go` and the leaf is
+Go refuses, so the 2004–2037 root is pinned in `webman/patch.go` and the leaf is
 verified by hand; `--no-patch` skips the check, so no title ID leaves the
 LAN) — and the syscon lifetime counters right of the metrics — `∞ 218d · 2709 boots ·
 65 hard-off` (hard-off = power-ons minus clean power-offs).
@@ -497,8 +497,10 @@ output guards, `merge.go` the copying and its cleanup, `run.go` the
 orchestration). The TUI is
 `internal/ps3top`, one flat package deliberately: the tests live in-package
 and exercise internals directly, and a split by concern would churn five
-thousand lines of tests for nothing. The files carve it by concern instead
-(the same map lives in `doc.go`):
+thousand lines of tests for nothing. The one exception is the webMAN client:
+`webman/` is a public package since 2026-10-09, so ps3sync and ps3run can
+import it at a pinned version, and `webman_bridge.go` keeps its names in the
+TUI. The files carve it by concern instead (the same map lives in `doc.go`):
 
 | file | owns |
 |---|---|
@@ -509,14 +511,22 @@ thousand lines of tests for nothing. The files carve it by concern instead
 | `session.go` | what each poll feeds: metric samples, play sessions |
 | `fan.go` | the serialized fan-command queue and its delta reports |
 | `thermal.go` | the thermal screen (`t`) that fan.go's queue drives |
-| `webman.go` | HTTP client + parsers for webMAN's pages |
-| `discover.go` | the LAN sweep behind auto-discovery |
-| `patch.go` | Sony's title-update index, behind a pinned root |
+| `webman_bridge.go` | the webman types, constants and entry points under the TUI's names |
 | `help.go` / `notify.go` | the key table behind `?` and `--help` / desktop notifications |
 | `history.go` | the NDJSON play log behind the play totals |
 | `spark.go` | metric rings + sparkline renderer |
 | `thermallog.go` | the per-minute thermal log and its weekly fold |
 | `art.go` / `cover.go` | kitty-graphics plumbing / cover fetch + cache |
+
+The client the TUI drives, as its own package
+(`github.com/lucasdaddiego/ps3top/webman`); it exports the client, the
+parsers, the discovery and the test hooks, and keeps the rest unexported:
+
+| file | owns |
+|---|---|
+| `webman/webman.go` | HTTP client + parsers for webMAN's pages, the library sort |
+| `webman/discover.go` | the LAN sweep behind auto-discovery, the last-good-host cache |
+| `webman/patch.go` | Sony's title-update index, behind a pinned root |
 
 And beside it, the annexed tool:
 
@@ -530,7 +540,11 @@ And beside it, the annexed tool:
 
 Each `*_test.go` matches its file, plus `state_test.go`/`edges_test.go` for
 model transitions and end-to-end key→wire paths, and `ui_test.go` for whole
-frames.
+frames. Three follow a feature instead: `webman/installed_test.go` covers
+`webman.go`'s installed-game parsers, and the TUI's `installed_test.go` and
+`patch_test.go` cover the model's side of the installed games and of the
+patch check, in `update.go` and `view.go` (the lookup itself is
+`webman/patch.go`, matched by its own test).
 
 ## Tests
 
@@ -545,9 +559,11 @@ black-box suite driving the Go binary, which passed unchanged before a line of
 Go test was written; that suite lives on in `internal/binmerge/*_test.go`.
 
 The rest of this section is ps3top's own. `go test` runs the parsers against
-the fixtures in `internal/ps3top/testdata/` (in-game
+the fixtures in `webman/testdata/` (in-game
 `cpursx.ps3`, `mygames.xml` with the game-ID-in-title setting on, and
-`mygames_info_ids.xml` with it off plus MM COVERS). The fixtures are **synthetic**: byte-faithful to
+`mygames_info_ids.xml` with it off plus MM COVERS); `internal/ps3top/testdata/`
+keeps copies of the five the TUI's own tests read (the in-game page, both game
+lists, the two folder listings). The fixtures are **synthetic**: byte-faithful to
 real webMAN (sMAN skin) output in structure, but every game title, title ID,
 and counter is invented (`MOCK…`/`DEMO…` IDs), chosen to exercise the sort
 rules — word-before-number, roman numerals, `V2`-style numbers, embedded
@@ -570,7 +586,7 @@ been fired at hardware by hand, which is where the three marker shapes and the
 dynamic-mode `?up` behaviour were observed; it's the automated suite that never
 touches the console.
 
-`testdata/cpursx_xmb.html` is **derived** from the in-game fixture (game block
+`webman/testdata/cpursx_xmb.html` is **derived** from the in-game fixture (game block
 and PlayTime removed), not captured. It proves the parser handles an absent
 game block — which feeds the mount/eject guard — but not that this is
 byte-for-byte what a console emits on the XMB. Replace it with a scrubbed real

@@ -1,4 +1,4 @@
-package ps3top
+package webman
 
 import (
 	"context"
@@ -27,7 +27,7 @@ func TestParseStatusLiteEdition(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := parseStatus(string(b))
+	s := ParseStatus(string(b))
 
 	if s.Firmware != "4.93 CEX PS3HEN 3.5.0" {
 		t.Errorf("Firmware = %q", s.Firmware)
@@ -54,10 +54,10 @@ func TestParseStatusEditionAndLiteInGame(t *testing.T) {
 		}
 		return string(b)
 	}
-	if !parseStatus(read("cpursx_lite.html")).Lite {
+	if !ParseStatus(read("cpursx_lite.html")).Lite {
 		t.Error("Lite page not read as Lite")
 	}
-	if parseStatus(read("cpursx_xmb.html")).Lite {
+	if ParseStatus(read("cpursx_xmb.html")).Lite {
 		t.Error("Full page read as Lite")
 	}
 
@@ -66,10 +66,10 @@ func TestParseStatusEditionAndLiteInGame(t *testing.T) {
 	if !strings.Contains(ingame, pid) {
 		t.Fatal("fixture lost its pid link")
 	}
-	if s := parseStatus(strings.Replace(ingame, pid, "", 1)); !s.InGame || s.GameID != "MOCK30982" {
+	if s := ParseStatus(strings.Replace(ingame, pid, "", 1)); !s.InGame || s.GameID != "MOCK30982" {
 		t.Errorf("no pid link: InGame=%v GameID=%q, want a running game", s.InGame, s.GameID)
 	}
-	if parseStatus(read("cpursx_xmb.html")).InGame {
+	if ParseStatus(read("cpursx_xmb.html")).InGame {
 		t.Error("XMB page read as in-game")
 	}
 }
@@ -79,7 +79,7 @@ func TestParseStatusInGame(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := parseStatus(string(b))
+	s := ParseStatus(string(b))
 
 	if !s.InGame {
 		t.Error("InGame = false, want true")
@@ -136,7 +136,7 @@ func TestParseGames(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	games := parseGames(string(b))
+	games := ParseGames(string(b))
 
 	if len(games) != 22 {
 		t.Fatalf("len(games) = %d, want 22", len(games))
@@ -200,7 +200,7 @@ func TestParseStatusOnXMB(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := parseStatus(string(b))
+	s := ParseStatus(string(b))
 
 	if s.InGame {
 		t.Error("InGame = true on a page with no game process")
@@ -213,7 +213,7 @@ func TestParseStatusOnXMB(t *testing.T) {
 	}
 	// everything that isn't about the running game must still be there — an XMB
 	// page is not a degraded page, and must not raise the markup-changed warning
-	if n := s.missing(); n != 0 {
+	if n := s.Missing(); n != 0 {
 		t.Errorf("missing() = %d on a healthy XMB page, want 0", n)
 	}
 	if s.CPUTemp != 58 || s.RSXTemp != 61 || s.FanPct != 26 {
@@ -239,7 +239,7 @@ func TestParseGamesEmptyLibrary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if games := parseGames(string(b)); len(games) != 0 {
+	if games := ParseGames(string(b)); len(games) != 0 {
 		t.Errorf("empty library parsed to %d games", len(games))
 	}
 }
@@ -254,26 +254,26 @@ func TestMissingFieldsAreUnknownNotZero(t *testing.T) {
 	}
 	full := string(b)
 
-	if s := parseStatus(full); s.missing() != 0 {
-		t.Errorf("intact fixture: missing() = %d, want 0", s.missing())
+	if s := ParseStatus(full); s.Missing() != 0 {
+		t.Errorf("intact fixture: missing() = %d, want 0", s.Missing())
 	}
 
 	// webMAN renames the temperature markers in some future build
 	broken := strings.NewReplacer("CPU: ", "CPU_TEMP ", "RSX: ", "RSX_TEMP ").Replace(full)
-	s := parseStatus(broken)
-	if s.CPUTemp != unknown || s.RSXTemp != unknown {
+	s := ParseStatus(broken)
+	if s.CPUTemp != Unknown || s.RSXTemp != Unknown {
 		t.Errorf("temps = %d/%d, want unknown/unknown", s.CPUTemp, s.RSXTemp)
 	}
-	if s.missing() != 2 {
-		t.Errorf("missing() = %d, want 2", s.missing())
+	if s.Missing() != 2 {
+		t.Errorf("missing() = %d, want 2", s.Missing())
 	}
 	// the rest of the page must still parse — one moved marker isn't a rewrite
 	if s.FanPct != 26 || s.GameID != "MOCK30982" {
 		t.Errorf("unrelated fields damaged: fan=%d id=%q", s.FanPct, s.GameID)
 	}
 
-	if s := parseStatus("<html>not webMAN at all</html>"); s.missing() != statusFields {
-		t.Errorf("garbage page: missing() = %d, want %d", s.missing(), statusFields)
+	if s := ParseStatus("<html>not webMAN at all</html>"); s.Missing() != StatusFields {
+		t.Errorf("garbage page: missing() = %d, want %d", s.Missing(), StatusFields)
 	}
 }
 
@@ -292,16 +292,16 @@ func TestFanModeCyclesThreeMarkerShapes(t *testing.T) {
 		t.Fatal("fixture no longer carries the SYSCON marker")
 	}
 
-	s := parseStatus(syscon)
+	s := ParseStatus(syscon)
 	if s.FanMode != "SYSCON" {
 		t.Errorf("FanMode = %q, want SYSCON", s.FanMode)
 	}
-	if s.MaxTemp != unknown {
+	if s.MaxTemp != Unknown {
 		t.Errorf("MaxTemp = %d, want unknown — SYSCON reports no target", s.MaxTemp)
 	}
 
 	// second state: the slot becomes a temperature target
-	d := parseStatus(strings.Replace(syscon, marker, `(MAX: 86°C)`, 1))
+	d := ParseStatus(strings.Replace(syscon, marker, `(MAX: 86°C)`, 1))
 	if d.FanMode != "dynamic" {
 		t.Errorf("FanMode = %q, want dynamic", d.FanMode)
 	}
@@ -310,11 +310,11 @@ func TestFanModeCyclesThreeMarkerShapes(t *testing.T) {
 	}
 
 	// third state: the slot is empty, and that means manual — not unknown
-	m := parseStatus(strings.Replace(syscon, marker, ``, 1))
+	m := ParseStatus(strings.Replace(syscon, marker, ``, 1))
 	if m.FanMode != "manual" {
 		t.Errorf("FanMode = %q, want manual", m.FanMode)
 	}
-	if m.MaxTemp != unknown {
+	if m.MaxTemp != Unknown {
 		t.Errorf("MaxTemp = %d, want unknown — manual reports no target", m.MaxTemp)
 	}
 
@@ -332,7 +332,7 @@ func TestFanModeCyclesThreeMarkerShapes(t *testing.T) {
 // The Fahrenheit copy of the line carries its own ceiling; matching it would
 // report a 186°C fan trip point.
 func TestFanMaxIgnoresFahrenheit(t *testing.T) {
-	s := parseStatus(`CPU: 58°C (MAX: 86°C)<br>RSX: 59°C</a><hr><a href="x">CPU: 136°F (MAX: 186°F)`)
+	s := ParseStatus(`CPU: 58°C (MAX: 86°C)<br>RSX: 59°C</a><hr><a href="x">CPU: 136°F (MAX: 186°F)`)
 	if s.MaxTemp != 86 {
 		t.Errorf("MaxTemp = %d, want 86", s.MaxTemp)
 	}
@@ -341,7 +341,7 @@ func TestFanMaxIgnoresFahrenheit(t *testing.T) {
 // "no marker" only means manual when the page parsed at all — otherwise a
 // broken page would confidently report a mode it never read.
 func TestFanModeNeedsAParsedPage(t *testing.T) {
-	s := parseStatus(`CPU: 58°C<br>RSX: 59°C<br>FAN SPEED:  27% (0x47)`)
+	s := ParseStatus(`CPU: 58°C<br>RSX: 59°C<br>FAN SPEED:  27% (0x47)`)
 	if s.FanMode != "manual" {
 		t.Errorf("FanMode = %q, want manual", s.FanMode)
 	}
@@ -349,7 +349,7 @@ func TestFanModeNeedsAParsedPage(t *testing.T) {
 		t.Errorf("FanPct = %d, want 27", s.FanPct)
 	}
 
-	if broken := parseStatus(`<html>not webMAN at all</html>`); broken.FanMode != "" {
+	if broken := ParseStatus(`<html>not webMAN at all</html>`); broken.FanMode != "" {
 		t.Errorf("unparseable page reported FanMode = %q, want empty", broken.FanMode)
 	}
 }
@@ -357,7 +357,7 @@ func TestFanModeNeedsAParsedPage(t *testing.T) {
 // 0 is a value webMAN can genuinely report, which is exactly why absent has to
 // be its own sentinel rather than reusing the zero value.
 func TestRealZeroIsNotUnknown(t *testing.T) {
-	s := parseStatus(`FAN SPEED:  0% (0x00)<br>MEM: 0 KB<br>HDD:  0.0 GB free`)
+	s := ParseStatus(`FAN SPEED:  0% (0x00)<br>MEM: 0 KB<br>HDD:  0.0 GB free`)
 	if s.FanPct != 0 {
 		t.Errorf("FanPct = %d, want 0", s.FanPct)
 	}
@@ -378,13 +378,13 @@ func TestClockSecs(t *testing.T) {
 		"garbage":   0,
 	}
 	for in, want := range cases {
-		if got := clockSecs(in); got != want {
-			t.Errorf("clockSecs(%q) = %d, want %d", in, got, want)
+		if got := ClockSecs(in); got != want {
+			t.Errorf("ClockSecs(%q) = %d, want %d", in, got, want)
 		}
 	}
 	// PlaySecs is what every history record's length comes from
 	b, _ := os.ReadFile("testdata/cpursx_ingame.html")
-	if s := parseStatus(string(b)); s.PlaySecs != 5025 {
+	if s := ParseStatus(string(b)); s.PlaySecs != 5025 {
 		t.Errorf("PlaySecs = %d, want 5025", s.PlaySecs)
 	}
 }
@@ -406,7 +406,7 @@ func TestSeriesOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	games := parseGames(string(b))
+	games := ParseGames(string(b))
 	pos := func(id string) int {
 		for i, g := range games {
 			if g.ID == id {
@@ -435,7 +435,7 @@ func TestSeriesOrder(t *testing.T) {
 	}
 }
 
-// lessAt is the pairwise order parseGames applies, given the library the keys
+// lessAt is the pairwise order ParseGames applies, given the library the keys
 // were computed over. The library matters: the release-order hint is qualified
 // across the whole list, not decided pair by pair.
 func lessAt(games []Game, i, j int) bool {
@@ -578,7 +578,7 @@ func TestRemoteTextIsStrippedOfControlSequences(t *testing.T) {
 
 	// and it's applied at the parser boundary, so nothing downstream has to
 	// remember to do it
-	games := parseGames(`<T key="1" include="inc">` +
+	games := ParseGames(`<T key="1" include="inc">` +
 		`<P key="title"><>Evil\x1b[2JGame</>` +
 		`<P key="module_action"><>/mount_ps3/dev_hdd0/PS3ISO/x.iso</>` +
 		`<P key="info"><>hdd0/PS3ISO</></T>`)
@@ -590,7 +590,7 @@ func TestRemoteTextIsStrippedOfControlSequences(t *testing.T) {
 			t.Errorf("control byte survived into %+v", g)
 		}
 	}
-	st := parseStatus(`Firmware: 4.93\x1bCEX <br>` +
+	st := ParseStatus(`Firmware: 4.93\x1bCEX <br>` +
 		`<a href="https://google.com/search?q=x">Bad\x1b]0;title\x07Game</a>`)
 	if strings.ContainsAny(st.Firmware+st.GameTitle, "\x1b\x07") {
 		t.Errorf("control byte survived into status: %q / %q", st.Firmware, st.GameTitle)
@@ -609,7 +609,7 @@ func TestMountActionPrefixIsNotGluedOntoTheHost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	games := parseGames(string(b))
+	games := ParseGames(string(b))
 	if len(games) != 3 {
 		t.Fatalf("len(games) = %d, want 3", len(games))
 	}
@@ -683,13 +683,13 @@ func TestNormalizeHost(t *testing.T) {
 		"[2001:db8::1]":       "[2001:db8::1]",
 	}
 	for in, want := range ok {
-		got, err := normalizeHost(in)
+		got, err := NormalizeHost(in)
 		if err != nil {
-			t.Errorf("normalizeHost(%q) errored: %v", in, err)
+			t.Errorf("NormalizeHost(%q) errored: %v", in, err)
 			continue
 		}
 		if got != want {
-			t.Errorf("normalizeHost(%q) = %q, want %q", in, got, want)
+			t.Errorf("NormalizeHost(%q) = %q, want %q", in, got, want)
 		}
 	}
 	bad := []string{
@@ -709,8 +709,8 @@ func TestNormalizeHost(t *testing.T) {
 		"999.999.999.999",
 	}
 	for _, in := range bad {
-		if got, err := normalizeHost(in); err == nil {
-			t.Errorf("normalizeHost(%q) accepted it as %q", in, got)
+		if got, err := NormalizeHost(in); err == nil {
+			t.Errorf("NormalizeHost(%q) accepted it as %q", in, got)
 		}
 	}
 }
@@ -813,7 +813,7 @@ func TestActionEndpoints(t *testing.T) {
 	if got != "/dev_hdd0/xmlhost/game_plugin/mygames.xml" {
 		t.Errorf("Games hit %q", got)
 	}
-	if _, err := cli.Fan(ctx, fanUp); err != nil {
+	if _, err := cli.Fan(ctx, FanUp); err != nil {
 		t.Errorf("Fan: %v", err)
 	}
 	if got != "/cpursx.ps3?up" {
@@ -836,7 +836,7 @@ func TestActionEndpoints(t *testing.T) {
 	if _, err := cli.Games(ctx); err == nil {
 		t.Error("Games: HTTP 500 reported as success")
 	}
-	if _, err := cli.Fan(ctx, fanUp); err == nil {
+	if _, err := cli.Fan(ctx, FanUp); err == nil {
 		t.Error("Fan: HTTP 500 reported as success")
 	}
 
@@ -851,7 +851,7 @@ func TestActionEndpoints(t *testing.T) {
 	if _, err := dead.Games(ctx); err == nil {
 		t.Error("Games against a dead address reported success")
 	}
-	if _, err := dead.Fan(ctx, fanUp); err == nil {
+	if _, err := dead.Fan(ctx, FanUp); err == nil {
 		t.Error("Fan against a dead address reported success")
 	}
 	// an unbuildable request never leaves the process
@@ -881,7 +881,7 @@ func TestConsoleClassification(t *testing.T) {
 	if consoleRank("PS3") <= consoleRank("PSP") {
 		t.Error("PS3 should sort after PSP")
 	}
-	if consoleRank("DREAMCAST") != len(consoleOrder) {
+	if consoleRank("DREAMCAST") != len(ConsoleOrder) {
 		t.Error("an unknown console should sort last, not panic")
 	}
 }
@@ -890,17 +890,17 @@ func TestConsoleClassification(t *testing.T) {
 // zero — the whole point of the unknown sentinel.
 func TestMatchersRejectUnparseableNumbers(t *testing.T) {
 	huge := strings.Repeat("9", 40)
-	if got := matchInt(reCPU, "CPU: "+huge+"°C"); got != unknown {
+	if got := matchInt(reCPU, "CPU: "+huge+"°C"); got != Unknown {
 		t.Errorf("an int that overflows parsed as %d, want unknown", got)
 	}
 	// matches the [\d.,]+ class but isn't a number
-	if got := matchFloat(reHDD, "HDD: 1.2.3 GB free"); got != unknown {
+	if got := matchFloat(reHDD, "HDD: 1.2.3 GB free"); got != Unknown {
 		t.Errorf("an unparseable float parsed as %v, want unknown", got)
 	}
-	if got := matchInt(reCPU, "no temperature here"); got != unknown {
+	if got := matchInt(reCPU, "no temperature here"); got != Unknown {
 		t.Errorf("a missing int = %d, want unknown", got)
 	}
-	if got := matchFloat(reHDD, "no disk here"); got != unknown {
+	if got := matchFloat(reHDD, "no disk here"); got != Unknown {
 		t.Errorf("a missing float = %v, want unknown", got)
 	}
 	if got := matchStr(reFW, "no firmware here"); got != "" {
@@ -919,8 +919,8 @@ func TestClockSecsPartialGarbage(t *testing.T) {
 		"01:23:xx": 0, // seconds unparseable
 		"99:59:59": 359999,
 	} {
-		if got := clockSecs(in); got != want {
-			t.Errorf("clockSecs(%q) = %d, want %d", in, got, want)
+		if got := ClockSecs(in); got != want {
+			t.Errorf("ClockSecs(%q) = %d, want %d", in, got, want)
 		}
 	}
 }
@@ -956,7 +956,7 @@ func TestParseGamesReadsIDsFromInfo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	games := parseGames(string(b))
+	games := ParseGames(string(b))
 	if len(games) != 4 {
 		t.Fatalf("len(games) = %d, want 4", len(games))
 	}
@@ -977,8 +977,8 @@ func TestParseGamesReadsIDsFromInfo(t *testing.T) {
 	if g := byID["MOCK98137"]; g.Ver != "" {
 		t.Errorf("an entry without a version got one: %+v", g)
 	}
-	// PSX entries carry an ID in this shape, and it wins over the title key
-	if g := byID["DEMO00474"]; g.Console() != "PSX" || statKey(g.ID, g.Title) != "DEMO00474" {
+	// PSX entries carry an ID in this shape
+	if g := byID["DEMO00474"]; g.Console() != "PSX" || g.ID != "DEMO00474" {
 		t.Errorf("PSX entry: %+v", g)
 	}
 	// the legacy suffix still supplies the ID when info doesn't
@@ -1017,7 +1017,7 @@ func TestParseSizes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := parseSizes(string(b))
+	got := ParseSizes(string(b))
 	want := map[string]int64{
 		"/dev_hdd0/PS3ISO/SampleGame2.iso":  10036969472,
 		"/dev_hdd0/PS3ISO/FixtureStorm.iso": 3735420928,
@@ -1060,7 +1060,7 @@ func TestParseStatusClockPastADay(t *testing.T) {
 		{"1d 01:23:45", "1d 01:24:02", 86400 + 5025},
 		{"12d 03:04:05", "12d 03:05:00", 12*86400 + 3*3600 + 4*60 + 5},
 	} {
-		s := parseStatus(page(c.play, c.startup))
+		s := ParseStatus(page(c.play, c.startup))
 		if s.PlayTime != c.play || s.PlaySecs != c.playSecs || s.Uptime != c.startup || !s.InGame {
 			t.Errorf("play %q startup %q: PlayTime %q PlaySecs %d Uptime %q InGame %v; want %q %d %q true",
 				c.play, c.startup, s.PlayTime, s.PlaySecs, s.Uptime, s.InGame, c.play, c.playSecs, c.startup)
@@ -1073,12 +1073,9 @@ func TestParseStatusClockPastADay(t *testing.T) {
 		"xd 01:23:45":  0,
 		"1d 01:23":     0,
 	} {
-		if got := clockSecs(in); got != want {
-			t.Errorf("clockSecs(%q) = %d, want %d", in, got, want)
+		if got := ClockSecs(in); got != want {
+			t.Errorf("ClockSecs(%q) = %d, want %d", in, got, want)
 		}
-	}
-	if got := fmtClock("1d 01:23:45"); got != "25h23m" {
-		t.Errorf("fmtClock(1d 01:23:45) = %q, want 25h23m", got)
 	}
 }
 
@@ -1092,7 +1089,7 @@ func TestEntitiesAreDecodedAtTheParser(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	games := parseGames(string(b))
+	games := ParseGames(string(b))
 	if len(games) != 2 {
 		t.Fatalf("len(games) = %d, want 2", len(games))
 	}
@@ -1110,9 +1107,61 @@ func TestEntitiesAreDecodedAtTheParser(t *testing.T) {
 	if e := byID["MOCK30998"]; strings.ContainsRune(e.Title, 0x1b) || strings.Contains(e.Title, "&#") {
 		t.Errorf("an entity-encoded ESC survived: %q", e.Title)
 	}
-	st := parseStatus(`<a href="https://google.com/search?q=x">Ratchet &amp; Clank&#x2122;</a> ` +
+	st := ParseStatus(`<a href="https://google.com/search?q=x">Ratchet &amp; Clank&#x2122;</a> ` +
 		`<a href="/mount.ps3/dev_hdd0/PS3ISO/Ratchet&amp;Clank.iso">x</a>`)
 	if st.GameTitle != "Ratchet & Clank™" || st.MountedISO != "/dev_hdd0/PS3ISO/Ratchet&Clank.iso" {
 		t.Errorf("status: title %q, mounted %q", st.GameTitle, st.MountedISO)
+	}
+}
+
+// --- client edges ---
+
+func TestNormalizeHostRejectsAnEmptyHostname(t *testing.T) {
+	if got, err := NormalizeHost(":80"); err == nil {
+		t.Errorf("a port with no host was accepted as %q", got)
+	}
+}
+
+func TestRedirectChainIsBounded(t *testing.T) {
+	var srv *httptest.Server
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// same origin every time, so only the hop count can stop it
+		http.Redirect(w, r, srv.URL+"/again", http.StatusFound)
+	}))
+	defer srv.Close()
+
+	cli := NewClient(strings.TrimPrefix(srv.URL, "http://"))
+	if _, err := cli.get(context.Background(), "/start"); err == nil {
+		t.Error("an endless same-origin redirect loop was followed to completion")
+	}
+}
+
+func TestSanitizeDropsBidiControls(t *testing.T) {
+	for name, in := range map[string]string{
+		"LRM":     "a\u200eb",
+		"RLM":     "a\u200fb",
+		"isolate": "a\u2066b\u2069",
+	} {
+		if got := sanitize(in); got != "ab" {
+			t.Errorf("%s: sanitize(%q) = %q, want %q", name, in, got, "ab")
+		}
+	}
+}
+
+// A franchise where one entry has no title ID can't use the release-order hint:
+// the entry without an ID would sort against everything by title while its
+// siblings sorted by ID, which is how the cycle got in.
+func TestFranchiseWithAnIDlessMemberFallsBackToTitles(t *testing.T) {
+	games := []Game{
+		{Title: "Saga: Zulu", ID: "MOCK00001", Category: "hdd0/PS3ISO"},
+		{Title: "Saga: Alpha", ID: "MOCK00002", Category: "hdd0/PS3ISO"},
+		{Title: "Saga: Mike", ID: "", Category: "hdd0/PSXISO"}, // PSX entries carry none
+	}
+	keys := gameKeys(games)
+	if keys[0].id != "" || keys[1].id != "" {
+		t.Error("the ID hint stayed on for a franchise with an ID-less member")
+	}
+	if !keys[1].less(keys[0]) {
+		t.Error("fallback isn't title order")
 	}
 }

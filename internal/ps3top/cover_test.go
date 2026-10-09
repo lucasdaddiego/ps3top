@@ -15,6 +15,8 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+
+	"github.com/lucasdaddiego/ps3top/webman"
 )
 
 func tinyPNG(t *testing.T) []byte {
@@ -244,7 +246,7 @@ func TestCoverRePlacedWhenAReloadWidensTheList(t *testing.T) {
 			Path: "/dev_hdd0/PS3ISO/Alpha.iso", MountURL: "/mount_ps3/dev_hdd0/PS3ISO/Alpha.iso",
 			IconPath: "/dev_hdd0/tmp/wmtmp/Alpha.PNG"},
 	}
-	m.Update(gamesMsg{games: sortGames(append([]Game(nil), lib...))})
+	m.Update(gamesMsg{games: webman.SortGames(append([]Game(nil), lib...))})
 	g, ok := m.selectedGame()
 	if !ok {
 		t.Fatal("no selection")
@@ -255,7 +257,7 @@ func TestCoverRePlacedWhenAReloadWidensTheList(t *testing.T) {
 	m.Update(coverShownMsg{icon: icon})
 	long := Game{Title: "Sample Quest: The Beginning - Game of the Year Edition Remastered", ID: "MOCK00103",
 		Category: "hdd0/PS3ISO", Path: "/dev_hdd0/PS3ISO/SQ.iso", MountURL: "/mount_ps3/dev_hdd0/PS3ISO/SQ.iso"}
-	m.Update(gamesMsg{games: sortGames(append(append([]Game(nil), lib...), long))})
+	m.Update(gamesMsg{games: webman.SortGames(append(append([]Game(nil), lib...), long))})
 	if sel, _ := m.selectedGame(); m.icon(sel) != icon {
 		t.Fatal("the selection moved off the shown cover")
 	}

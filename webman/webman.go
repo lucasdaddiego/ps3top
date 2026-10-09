@@ -1,4 +1,4 @@
-package ps3top
+package webman
 
 // webMAN MOD HTTP client + parsers for the sMAN-skinned build (1.47.48).
 // Etiquette: webMAN's web server has ~4 session slots — every request uses a
@@ -24,13 +24,15 @@ import (
 	"time"
 )
 
-// unknown marks a numeric field the status page didn't carry. It has to be a
+// Unknown marks a numeric field the status page didn't carry. It has to be a
 // sentinel rather than the zero value: webMAN legitimately reports 0 for some
 // of these (FAN SPEED: 0%), so 0 cannot mean "absent". Before this existed a
 // markup change made every metric parse as 0 — and 0°C renders as healthy
 // green, i.e. a broken parser looked like a perfectly cool console.
-const unknown = -1
+const Unknown = -1
 
+// Status is one read of webMAN's status page (/cpursx.ps3): the running game,
+// the temperatures and the fan, memory and disk, the clocks, the build.
 type Status struct {
 	InGame     bool
 	GameTitle  string // "Sample Game™ 2" (version suffix stripped)
@@ -55,19 +57,20 @@ type Status struct {
 	HardOffs   int    // 65 — power-ons minus clean power-offs = unclean shutdowns
 }
 
-// statusFields is how many of the page's core fields parseStatus expects to
-// find; missing() reports how many it actually lost, which is the signal that
+// StatusFields is how many of the page's core fields ParseStatus expects to
+// find; Missing() reports how many it actually lost, which is the signal that
 // webMAN's markup moved under us.
-const statusFields = 6
+const StatusFields = 6
 
-func (s Status) missing() int {
+// Missing counts the core fields the page didn't carry, out of StatusFields.
+func (s Status) Missing() int {
 	n := 0
 	for _, v := range []int{s.CPUTemp, s.RSXTemp, s.FanPct, s.MemFreeKB} {
-		if v == unknown {
+		if v == Unknown {
 			n++
 		}
 	}
-	if s.HDDFreeGB == unknown {
+	if s.HDDFreeGB == Unknown {
 		n++
 	}
 	if s.Firmware == "" {
@@ -76,6 +79,8 @@ func (s Status) missing() int {
 	return n
 }
 
+// Game is one title webMAN can mount or start: an entry of mygames.xml, or a
+// game a PKG installed to /dev_hdd0/game (see Installed).
 type Game struct {
 	Title    string // "Sample Game™ 2"
 	ID       string // "MOCK30982"
@@ -100,8 +105,8 @@ const (
 // app_home icon instead of the disc one.
 func (g Game) Installed() bool { return g.Category == installedCategory }
 
-// consoleOrder is chronological — release order, oldest first.
-var consoleOrder = []string{"PSX", "PS2", "PSP", "PS3"}
+// ConsoleOrder is chronological — release order, oldest first.
+var ConsoleOrder = []string{"PSX", "PS2", "PSP", "PS3"}
 
 // Console derives the platform from webMAN's source-folder category
 // (hdd0/PSXISO, hdd0/PS2ISO, …; anything unrecognized is a PS3 title).
@@ -118,26 +123,30 @@ func (g Game) Console() string {
 }
 
 func consoleRank(name string) int {
-	for i, c := range consoleOrder {
+	for i, c := range ConsoleOrder {
 		if c == name {
 			return i
 		}
 	}
-	return len(consoleOrder)
+	return len(ConsoleOrder)
 }
 
+// Client talks to one webMAN console over its HTTP interface.
 type Client struct {
 	base string
 	http *http.Client
 }
 
-// normalizeHost turns a --host / PS3TOP_HOST value into the bare authority the
+// Host is the authority the client addresses, as NewClient was given it.
+func (c *Client) Host() string { return strings.TrimPrefix(c.base, "http://") }
+
+// NormalizeHost turns a --host / PS3TOP_HOST value into the bare authority the
 // client addresses. webMAN is reached as host[:port] and nothing else: a value
 // carrying a path silently prefixes every endpoint — status becomes
 // /prefix/cpursx.ps3, a mount becomes /prefix/mount_ps3/... — and the failures
 // that follow look like the console misbehaving rather than like a typo. A
 // leading http:// is tolerated because it's the obvious thing to paste.
-func normalizeHost(h string) (string, error) {
+func NormalizeHost(h string) (string, error) {
 	h = strings.TrimSpace(h)
 	if s := strings.TrimPrefix(h, "http://"); s != h {
 		h = s
@@ -186,6 +195,9 @@ func isNumericDotted(s string) bool {
 	return strings.IndexFunc(s, func(r rune) bool { return r != '.' && (r < '0' || r > '9') }) < 0
 }
 
+// NewClient addresses the console at host — host or host:port, the shape
+// NormalizeHost returns — with the etiquette webMAN needs: a fresh connection
+// per request, a 2 s dial, and no redirect to another host.
 func NewClient(host string) *Client {
 	return &Client{
 		base: "http://" + host,
@@ -274,7 +286,7 @@ func (c *Client) statusPage(ctx context.Context, path string) (Status, error) {
 	if !bytes.Contains(body, []byte("webMAN")) {
 		return Status{}, errNotWebMAN
 	}
-	return parseStatus(string(body)), nil
+	return ParseStatus(string(body)), nil
 }
 
 func (c *Client) Games(ctx context.Context) ([]Game, error) {
@@ -282,7 +294,7 @@ func (c *Client) Games(ctx context.Context) ([]Game, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parseGames(string(body)), nil
+	return ParseGames(string(body)), nil
 }
 
 func (c *Client) Cover(ctx context.Context, iconPath string) ([]byte, error) {
@@ -297,7 +309,7 @@ func (c *Client) Sizes(ctx context.Context, folder string) (map[string]int64, er
 	if err != nil {
 		return nil, err
 	}
-	return parseSizes(string(body)), nil
+	return ParseSizes(string(body)), nil
 }
 
 // webMAN's directory listing hangs the exact size on each row's mount link:
@@ -307,7 +319,9 @@ func (c *Client) Sizes(ctx context.Context, folder string) (map[string]int64, er
 // Only mountable rows carry a /mount.ps3 href, which is the filter.
 var reSizeRow = regexp.MustCompile(`href="/mount\.ps3(/[^"]+)" title="([\d,]+) b"`)
 
-func parseSizes(html string) map[string]int64 {
+// ParseSizes reads one ISO folder listing into exact byte sizes, keyed by the
+// path webMAN mounts each file by.
+func ParseSizes(html string) map[string]int64 {
 	out := map[string]int64{}
 	for _, m := range reSizeRow.FindAllStringSubmatch(html, -1) {
 		n, err := strconv.ParseInt(strings.ReplaceAll(m[2], ",", ""), 10, 64)
@@ -351,7 +365,7 @@ func (c *Client) InstalledGames(ctx context.Context, lib []Game, known map[strin
 	}
 	covers := coversDir(lib)
 	learned = map[string]map[string]string{}
-	for _, folder := range parseGameDirs(string(body)) {
+	for _, folder := range ParseGameDirs(string(body)) {
 		if have[folder] {
 			continue
 		}
@@ -367,11 +381,11 @@ func (c *Client) InstalledGames(ctx context.Context, lib []Game, known map[strin
 			case err != nil:
 				continue // didn't get through: not learned, asked again next time
 			default:
-				sfo, _ = parseSFO(b) // nil on a file that won't parse: no title
+				sfo, _ = ParseSFO(b) // nil on a file that won't parse: no title
 			}
 			learned[folder] = sfo
 		}
-		if g, ok := installedGame(folder, sfo, covers); ok {
+		if g, ok := InstalledGame(folder, sfo, covers); ok {
 			out = append(out, g)
 		}
 	}
@@ -388,7 +402,9 @@ func (c *Client) InstalledGames(ctx context.Context, lib []Game, known map[strin
 // side folders some discs write.
 var reGameDir = regexp.MustCompile(`href="/mount\.ps3` + hddGameDir + `/([A-Z]{4}\d{5})"`)
 
-func parseGameDirs(html string) []string {
+// ParseGameDirs lists the Sony-shaped title folders of a /dev_hdd0/game
+// listing, in page order, each once.
+func ParseGameDirs(html string) []string {
 	var out []string
 	seen := map[string]bool{}
 	for _, m := range reGameDir.FindAllStringSubmatch(html, -1) {
@@ -405,12 +421,12 @@ var (
 	reAppVer = regexp.MustCompile(`^\d+\.\d+$`)
 )
 
-// installedGame builds the library entry for one /dev_hdd0/game folder from
+// InstalledGame builds the library entry for one /dev_hdd0/game folder from
 // its PARAM.SFO, or reports false for a folder that isn't an installed game.
 // Its cover is the multiMAN one when the library's icons come from there, so
 // it matches every other row, with the folder's own ICON0 behind it — a PSN
 // title is the kind a cover pack is likely to lack.
-func installedGame(folder string, sfo map[string]string, covers string) (Game, bool) {
+func InstalledGame(folder string, sfo map[string]string, covers string) (Game, bool) {
 	if sfo["CATEGORY"] != "HG" {
 		return Game{}, false
 	}
@@ -462,12 +478,15 @@ const (
 	sfoUTF8    = 0x0204 // NUL-terminated
 )
 
-// parseSFO reads the string fields of a PARAM.SFO, the key/value table every
+// ParseSFO reads the string fields of a PARAM.SFO, the key/value table every
 // PS3 title carries (TITLE, TITLE_ID, CATEGORY, APP_VER, …). The layout is a
 // 20-byte header — "\0PSF", version, key-table offset, data-table offset,
 // entry count, little-endian — then one 16-byte index entry per field. The
-// bytes came off the network, so every offset is checked before it's used.
-func parseSFO(b []byte) (map[string]string, error) {
+// bytes came off the network, so every offset is checked before it's used,
+// but the values come back raw: InstalledGame sanitizes the ones it keeps,
+// and a caller that prints any other has to strip the control and bidi
+// characters itself before a terminal sees it.
+func ParseSFO(b []byte) (map[string]string, error) {
 	if len(b) < 20 || string(b[:4]) != "\x00PSF" {
 		return nil, errors.New("not a PARAM.SFO")
 	}
@@ -542,9 +561,9 @@ func (c *Client) Popup(ctx context.Context, msg string) error {
 // new state — no follow-up poll, and the caller can report the actual delta
 // instead of assuming the step landed.
 const (
-	fanUp   = "up"
-	fanDown = "dn"
-	fanMode = "mode"
+	FanUp   = "up"
+	FanDown = "dn"
+	FanMode = "mode"
 )
 
 func (c *Client) Fan(ctx context.Context, cmd string) (Status, error) {
@@ -586,9 +605,11 @@ var (
 	reLifeBits = regexp.MustCompile(`^(\d+)d [\d:]+ • ([\d,]+) ON • [\d,]+ OFF \((\d+)\)`)
 )
 
-func parseStatus(html string) Status {
+// ParseStatus reads webMAN's status page. A numeric field the page doesn't
+// carry is Unknown, never 0; a string one is "".
+func ParseStatus(html string) Status {
 	s := Status{
-		MaxTemp:   unknown,
+		MaxTemp:   Unknown,
 		PlayTime:  matchStr(rePlay, html),
 		Uptime:    matchStr(reUptime, html),
 		GameID:    matchStr(reGameID, html),
@@ -600,7 +621,7 @@ func parseStatus(html string) Status {
 	s.FanPct = matchInt(reFanPct, html)
 	s.MemFreeKB = matchInt(reMem, html)
 	s.HDDFreeGB = matchFloat(reHDD, html)
-	s.PlaySecs = clockSecs(s.PlayTime)
+	s.PlaySecs = ClockSecs(s.PlayTime)
 	s.Lite = reLite.MatchString(html)
 	// The pid link is the plain in-game marker, but it only exists in a build
 	// with PS3MAPI, and a Lite build has none — there InGame read false with a
@@ -622,9 +643,9 @@ func parseStatus(html string) Status {
 	// reporting itself as manual.
 	if mode := matchStr(reFanMode, html); mode != "" {
 		s.FanMode = mode
-	} else if mx := matchInt(reFanMax, html); mx != unknown {
+	} else if mx := matchInt(reFanMax, html); mx != Unknown {
 		s.FanMode, s.MaxTemp = "dynamic", mx
-	} else if s.FanPct != unknown {
+	} else if s.FanPct != Unknown {
 		s.FanMode = "manual"
 	}
 	if m := reGameName.FindStringSubmatch(html); m != nil {
@@ -712,11 +733,11 @@ func matchStr(re *regexp.Regexp, s string) string {
 func matchInt(re *regexp.Regexp, s string) int {
 	m := re.FindStringSubmatch(s)
 	if m == nil {
-		return unknown
+		return Unknown
 	}
 	n, err := strconv.Atoi(strings.ReplaceAll(m[1], ",", ""))
 	if err != nil {
-		return unknown
+		return Unknown
 	}
 	return n
 }
@@ -724,18 +745,18 @@ func matchInt(re *regexp.Regexp, s string) int {
 func matchFloat(re *regexp.Regexp, s string) float64 {
 	m := re.FindStringSubmatch(s)
 	if m == nil {
-		return unknown
+		return Unknown
 	}
 	f, err := strconv.ParseFloat(strings.ReplaceAll(m[1], ",", ""), 64)
 	if err != nil {
-		return unknown
+		return Unknown
 	}
 	return f
 }
 
-// clockSecs converts webMAN's "HH:MM:SS", or "Nd HH:MM:SS" past a day, to
+// ClockSecs converts webMAN's "HH:MM:SS", or "Nd HH:MM:SS" past a day, to
 // seconds (0 if unparseable).
-func clockSecs(c string) int {
+func ClockSecs(c string) int {
 	days := 0
 	if d, rest, ok := strings.Cut(c, "d "); ok {
 		n, err := strconv.Atoi(d)
@@ -824,7 +845,9 @@ func isDigits(s string) bool {
 	return s != "" && strings.IndexFunc(s, func(r rune) bool { return r < '0' || r > '9' }) < 0
 }
 
-func parseGames(xml string) []Game {
+// ParseGames reads mygames.xml into the library, in the order SortGames gives
+// it; an entry with no mount action is dropped.
+func ParseGames(xml string) []Game {
 	var games []Game
 	for _, e := range reEntry.FindAllStringSubmatch(xml, -1) {
 		var g Game
@@ -857,14 +880,14 @@ func parseGames(xml string) []Game {
 			games = append(games, g)
 		}
 	}
-	return sortGames(games)
+	return SortGames(games)
 }
 
-// sortGames puts consoles in chronological order (PSX → PS2 → PSP → PS3) and,
+// SortGames puts consoles in chronological order (PSX → PS2 → PSP → PS3) and,
 // within a console, series-aware alphabetical (originals before numbered
 // sequels). Sorting an index keeps each game paired with the key computed for
 // it.
-func sortGames(games []Game) []Game {
+func SortGames(games []Game) []Game {
 	keys := gameKeys(games)
 	order := make([]int, len(games))
 	for i := range order {
@@ -997,7 +1020,7 @@ func lessTitles(a, b string) bool {
 	if len(ta) != len(tb) {
 		return len(ta) < len(tb)
 	}
-	return sortKey(a) < sortKey(b)
+	return SortKey(a) < SortKey(b)
 }
 
 type ttok struct {
@@ -1051,9 +1074,9 @@ func romanVal(s string) int {
 	return total
 }
 
-// sortKey lowercases and drops trademark noise so "FIXTURE STORM®" and
+// SortKey lowercases and drops trademark noise so "FIXTURE STORM®" and
 // "Fixture Storm™" collate together.
-func sortKey(title string) string {
+func SortKey(title string) string {
 	t := strings.ToLower(title)
 	t = strings.NewReplacer("™", "", "®", "").Replace(t)
 	return strings.TrimSpace(t)

@@ -309,6 +309,10 @@ func TestFmtDur(t *testing.T) {
 	if got := fmtClock("garbage"); got != "garbage" {
 		t.Errorf("fmtClock(garbage) = %q, want passthrough", got)
 	}
+	// past a day webMAN puts the days in front of the clock
+	if got := fmtClock("1d 01:23:45"); got != "25h23m" {
+		t.Errorf("fmtClock(1d 01:23:45) = %q, want 25h23m", got)
+	}
 }
 
 func TestFmtAgo(t *testing.T) {

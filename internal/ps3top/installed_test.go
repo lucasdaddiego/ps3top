@@ -2,7 +2,6 @@ package ps3top
 
 import (
 	"bytes"
-	"context"
 	"encoding/binary"
 	"net/http"
 	"net/http/httptest"
@@ -11,12 +10,16 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/lucasdaddiego/ps3top/webman"
 )
 
-// Games a PKG installed to /dev_hdd0/game. The fixture listing is synthetic,
-// shaped like the real one: a disc's patch folder, its "_install" and
-// "GAMEDATA" side folders, a cover-pack installer, two installed games, a
-// folder with no PARAM.SFO, and two homebrew apps under non-Sony IDs.
+// The model's side of the games a PKG installed to /dev_hdd0/game: how they
+// join the library, start, show a cover and are cached across reloads. The
+// parsers and the client behind them are tested in webman; the two helpers
+// below are that package's, copied so this suite serves the same synthetic
+// console (a disc's patch folder, its side folders, a cover-pack installer,
+// two installed games, a folder with no PARAM.SFO, two homebrew apps).
 
 // sfo builds a PARAM.SFO the way the PS3 lays one out: header, index, key
 // table, data table. Fields are key/value pairs, written as NUL-terminated
@@ -29,7 +32,7 @@ func sfo(fields ...string) []byte {
 	}
 	var fs []field
 	for i := 0; i+1 < len(fields); i += 2 {
-		fs = append(fs, field{fields[i], append([]byte(fields[i+1]), 0), sfoUTF8})
+		fs = append(fs, field{fields[i], append([]byte(fields[i+1]), 0), 0x0204}) // NUL-terminated UTF-8
 	}
 	fs = append(fs, field{"PARENTAL_LEVEL", []byte{5, 0, 0, 0}, 0x0404})
 
@@ -54,112 +57,6 @@ func sfo(fields ...string) []byte {
 	le.PutUint32(hdr[12:], uint32(20+len(idx)+keys.Len()))
 	le.PutUint32(hdr[16:], uint32(len(fs)))
 	return slices.Concat(hdr, idx, keys.Bytes(), data.Bytes())
-}
-
-func TestParseSFO(t *testing.T) {
-	got, err := parseSFO(sfo("CATEGORY", "HG", "TITLE", "Demo Strike®", "TITLE_ID", "DEMO00575", "APP_VER", "01.00"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := map[string]string{"CATEGORY": "HG", "TITLE": "Demo Strike®", "TITLE_ID": "DEMO00575", "APP_VER": "01.00"}
-	if len(got) != len(want) {
-		t.Errorf("fields = %v, want %v (the integer field must be skipped)", got, want)
-	}
-	for k, v := range want {
-		if got[k] != v {
-			t.Errorf("%s = %q, want %q", k, got[k], v)
-		}
-	}
-}
-
-// The file comes off the network. A short read, a wrong file or a lying
-// offset must come back as an error, never as a panic.
-func TestParseSFORefusesBrokenFiles(t *testing.T) {
-	good := sfo("CATEGORY", "HG", "TITLE", "Demo Strike®")
-	for n := range len(good) {
-		parseSFO(good[:n]) // no panic at any length is the assertion
-	}
-	if _, err := parseSFO([]byte("<html>404 Not Found</html>")); err == nil {
-		t.Error("an HTML page parsed as a PARAM.SFO")
-	}
-	lying := bytes.Clone(good)
-	binary.LittleEndian.PutUint32(lying[20+12:], 1<<30) // first field's data offset
-	if _, err := parseSFO(lying); err == nil {
-		t.Error("a data offset past the end was accepted")
-	}
-	huge := bytes.Clone(good)
-	binary.LittleEndian.PutUint32(huge[16:], 1<<31) // entry count
-	if _, err := parseSFO(huge); err == nil {
-		t.Error("an entry count past the end was accepted")
-	}
-}
-
-func TestInstalledGame(t *testing.T) {
-	const covers = "/dev_hdd0//game/MOCK80608/USRDIR/covers/"
-	g, ok := installedGame("DEMO30392", map[string]string{
-		"CATEGORY": "HG", "TITLE": "Sample Quest\nOnline", "TITLE_ID": "DEMO30392", "APP_VER": "01.04",
-	}, covers)
-	if !ok {
-		t.Fatal("an HG folder was dropped")
-	}
-	want := Game{
-		Title: "Sample Quest Online", ID: "DEMO30392", Ver: "01.04",
-		Path: "/dev_hdd0/game/DEMO30392", MountURL: "/mount_ps3/dev_hdd0/game/DEMO30392",
-		IconPath: covers + "DEMO30392.JPG", AltIcon: "/dev_hdd0/game/DEMO30392/ICON0.PNG",
-		Category: "hdd0/game",
-	}
-	if g != want {
-		t.Errorf("entry =\n  %+v\nwant\n  %+v", g, want)
-	}
-	if !g.Installed() || g.Console() != "PS3" {
-		t.Errorf("Installed/Console = %v/%s", g.Installed(), g.Console())
-	}
-
-	// a patch or data folder is not a game
-	for _, cat := range []string{"GD", "SF", ""} {
-		if _, ok := installedGame("MOCK01807", map[string]string{"CATEGORY": cat, "TITLE": "x"}, covers); ok {
-			t.Errorf("category %q kept", cat)
-		}
-	}
-
-	// no covers folder: the folder's own icon, and nothing behind it. A
-	// missing title or a malformed ID falls back to the folder name.
-	g, _ = installedGame("DEMO00575", map[string]string{"CATEGORY": "HG", "TITLE_ID": "\x1b[2J", "APP_VER": "1"}, "")
-	if g.Title != "DEMO00575" || g.ID != "DEMO00575" || g.Ver != "" {
-		t.Errorf("fallbacks: %+v", g)
-	}
-	if g.IconPath != "/dev_hdd0/game/DEMO00575/ICON0.PNG" || g.AltIcon != "" {
-		t.Errorf("icons without a covers folder: %q / %q", g.IconPath, g.AltIcon)
-	}
-}
-
-func TestParseGameDirs(t *testing.T) {
-	b, err := os.ReadFile("testdata/dir_game.html")
-	if err != nil {
-		t.Fatal(err)
-	}
-	got := parseGameDirs(string(b))
-	want := []string{"MOCK98106", "MOCK01807", "MOCK80608", "DEMO00404", "DEMO00575", "DEMO30392"}
-	if !slices.Equal(got, want) {
-		t.Errorf("folders = %v\nwant      %v", got, want)
-	}
-}
-
-func TestCoversDir(t *testing.T) {
-	for _, c := range []struct {
-		fixture, want string
-	}{
-		{"testdata/mygames_info_ids.xml", "/dev_hdd0//game/MOCK80608/USRDIR/covers/"},
-		{"testdata/mygames.xml", ""}, // wmtmp PNG icons: webMAN isn't using a covers folder
-	} {
-		b, err := os.ReadFile(c.fixture)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if got := coversDir(parseGames(string(b))); got != c.want {
-			t.Errorf("%s: coversDir = %q, want %q", c.fixture, got, c.want)
-		}
-	}
 }
 
 // installedConsole serves the game-folder listing and the PARAM.SFOs behind
@@ -205,63 +102,6 @@ func installedConsole(t *testing.T, extra func(w http.ResponseWriter, r *http.Re
 		mu.Lock()
 		defer mu.Unlock()
 		return slices.Clone(asked)
-	}
-}
-
-// The library already names MOCK98106 (an ISO), so its folder is that disc's
-// patch and is never read. Every other Sony-shaped folder costs one PARAM.SFO
-// read, and only the two HG ones come back.
-func TestInstalledGamesFromTheConsole(t *testing.T) {
-	cli, asked := installedConsole(t, nil)
-	lib := []Game{{Title: "Twisted Sample", ID: "MOCK98106", Category: "hdd0/PS3ISO",
-		IconPath: "/dev_hdd0//game/MOCK80608/USRDIR/covers/MOCK98106.JPG"}}
-
-	got, _, err := cli.InstalledGames(context.Background(), lib, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ids []string
-	for _, g := range got {
-		ids = append(ids, g.ID)
-	}
-	if !slices.Equal(ids, []string{"DEMO00575", "DEMO30392"}) {
-		t.Errorf("installed = %v, want [DEMO00575 DEMO30392]", ids)
-	}
-	if len(got) == 2 && (got[0].Title != "Demo Strike®" || got[0].IconPath != "/dev_hdd0//game/MOCK80608/USRDIR/covers/DEMO00575.JPG") {
-		t.Errorf("first entry: %+v", got[0])
-	}
-
-	want := []string{
-		"/dev_hdd0/game/",
-		"/dev_hdd0/game/MOCK01807/PARAM.SFO",
-		"/dev_hdd0/game/MOCK80608/PARAM.SFO",
-		"/dev_hdd0/game/DEMO00404/PARAM.SFO",
-		"/dev_hdd0/game/DEMO00575/PARAM.SFO",
-		"/dev_hdd0/game/DEMO30392/PARAM.SFO",
-	}
-	if a := asked(); !slices.Equal(a, want) {
-		t.Errorf("requests =\n  %v\nwant\n  %v", a, want)
-	}
-}
-
-// A console that runs out the budget part-way keeps what was read before.
-func TestInstalledGamesKeepsWhatItReadBeforeTheDeadline(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	cli, _ := installedConsole(t, func(w http.ResponseWriter, r *http.Request) bool {
-		if r.URL.Path != "/dev_hdd0/game/DEMO30392/PARAM.SFO" {
-			return false
-		}
-		cancel()
-		<-r.Context().Done() // the client hangs up on its cancelled context
-		return true
-	})
-	got, _, err := cli.InstalledGames(ctx, nil, nil)
-	if err == nil {
-		t.Error("a cancelled pass reported no error")
-	}
-	if len(got) != 1 || got[0].ID != "DEMO00575" {
-		t.Errorf("kept %+v, want the one game read before the deadline", got)
 	}
 }
 
@@ -319,7 +159,7 @@ func TestFetchGamesAddsInstalledGames(t *testing.T) {
 func TestPlayKeyByEdition(t *testing.T) {
 	iso := Game{Title: "Sample Game™ 2", ID: "MOCK30982", Category: "hdd0/PS3ISO",
 		Path: "/dev_hdd0/PS3ISO/SampleGame2.iso", MountURL: "/mount_ps3/dev_hdd0/PS3ISO/SampleGame2.iso"}
-	inst, _ := installedGame("DEMO00575", map[string]string{"CATEGORY": "HG", "TITLE": "Demo Strike®"}, "")
+	inst, _ := webman.InstalledGame("DEMO00575", map[string]string{"CATEGORY": "HG", "TITLE": "Demo Strike®"}, "")
 	for _, c := range []struct {
 		name string
 		key  string
@@ -364,7 +204,7 @@ func TestPlayKeyByEdition(t *testing.T) {
 func TestInstalledCoverFallsBackToICON0(t *testing.T) {
 	m := liveModel(t, 120)
 	m.artOn = true
-	g, _ := installedGame("DEMO00575", map[string]string{"CATEGORY": "HG", "TITLE": "Demo Strike®"},
+	g, _ := webman.InstalledGame("DEMO00575", map[string]string{"CATEGORY": "HG", "TITLE": "Demo Strike®"},
 		"/dev_hdd0//game/MOCK80608/USRDIR/covers/")
 	m.games[0] = g
 	m.applyFilter("")
@@ -390,7 +230,7 @@ func TestFetchSizesSkipsInstalledGames(t *testing.T) {
 	cli, asked := installedConsole(t, nil)
 	m := liveModel(t, 120)
 	m.cli = cli
-	inst, _ := installedGame("DEMO00575", map[string]string{"CATEGORY": "HG"}, "")
+	inst, _ := webman.InstalledGame("DEMO00575", map[string]string{"CATEGORY": "HG"}, "")
 	m.games = []Game{{Title: "Sample Game™ 2", Path: "/dev_hdd0/PS3ISO/SampleGame2.iso"}, inst}
 	exec(t, m, m.fetchSizes())
 	if a := asked(); !slices.Equal(a, []string{"/dev_hdd0/PS3ISO/"}) {
