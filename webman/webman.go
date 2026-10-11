@@ -251,8 +251,13 @@ func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("%s: %w", path, httpError(resp.StatusCode))
 	}
-	return io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	return io.ReadAll(io.LimitReader(resp.Body, bodyCap))
 }
+
+// bodyCap is the most of a body get reads. A longer body is cut there with
+// no error, so a caller that must know it has the whole page (Dir) treats a
+// body of exactly this size as cut.
+const bodyCap = 4 << 20
 
 // httpError is a response that wasn't 200, kept as a type so a caller can
 // tell a 404 — the console answered: there is no such file — from a request
@@ -260,6 +265,15 @@ func (c *Client) get(ctx context.Context, path string) ([]byte, error) {
 type httpError int
 
 func (e httpError) Error() string { return fmt.Sprintf("HTTP %d", int(e)) }
+
+// IsNotFound reports whether err is a 404 from any call of this package: a
+// file or folder the console does not have (Cover, Dir, InstalledGames), a
+// title Sony has no update index for (Patches), or a package Sony does not
+// serve (FetchPatch). A request that did not get through is not a 404.
+func IsNotFound(err error) bool {
+	var status httpError
+	return errors.As(err, &status) && status == http.StatusNotFound
+}
 
 // fire hits an action endpoint and discards the response body.
 func (c *Client) fire(ctx context.Context, path string) error {
@@ -372,11 +386,10 @@ func (c *Client) InstalledGames(ctx context.Context, lib []Game, known map[strin
 		sfo, seen := known[folder]
 		if !seen {
 			b, err := c.get(ctx, hddGameDir+"/"+folder+"/PARAM.SFO")
-			var status httpError
 			switch {
 			case err != nil && ctx.Err() != nil:
 				return out, learned, err
-			case errors.As(err, &status) && status == http.StatusNotFound:
+			case IsNotFound(err):
 				sfo = nil // no PARAM.SFO is no title, and the console said so
 			case err != nil:
 				continue // didn't get through: not learned, asked again next time

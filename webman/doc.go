@@ -13,8 +13,9 @@
 // flight; the client enforces nothing there. The map:
 //
 //	webman.go   the client, the parsers for webMAN's pages, the library sort
+//	listing.go  Dir: one folder listing read back as rows, and when webMAN cut it
 //	discover.go the LAN sweep that finds the console, and the last-good cache
-//	patch.go    Sony's title-update index, behind a pinned root
+//	patch.go    Sony's title-update index and its packages, behind a pinned root
 //
 // SweepPort, LocalNets and PatchLookup are test hooks: a suite points the
 // sweep at loopback and stubs the Sony lookup, and nothing else sets them.

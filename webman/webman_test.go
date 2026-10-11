@@ -2,6 +2,8 @@ package webman
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1137,6 +1139,36 @@ func TestEntitiesAreDecodedAtTheParser(t *testing.T) {
 }
 
 // --- client edges ---
+
+// IsNotFound is the console's (or Sony's) "no such thing": a 404 and
+// nothing else. Another status, a dead address and no error at all are not
+// one, and the wrapping a caller adds does not hide one.
+func TestIsNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/broken" {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	cli := NewClient(strings.TrimPrefix(srv.URL, "http://"))
+	ctx := context.Background()
+
+	_, err := cli.Cover(ctx, "/dev_hdd0/tmp/wmtmp/none.PNG")
+	if !IsNotFound(err) || !IsNotFound(fmt.Errorf("cover: %w", err)) {
+		t.Errorf("a 404: IsNotFound(%v) = false", err)
+	}
+	if _, err := cli.Cover(ctx, "/broken"); err == nil || IsNotFound(err) {
+		t.Errorf("a 500: %v", err)
+	}
+	if _, err := NewClient("127.0.0.1:1").Cover(ctx, "/x"); err == nil || IsNotFound(err) {
+		t.Errorf("a dead address: %v", err)
+	}
+	if IsNotFound(nil) || IsNotFound(errors.New("HTTP 404")) {
+		t.Error("IsNotFound took an error that is not a 404 response")
+	}
+}
 
 func TestNormalizeHostRejectsAnEmptyHostname(t *testing.T) {
 	if got, err := NormalizeHost(":80"); err == nil {

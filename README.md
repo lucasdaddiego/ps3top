@@ -528,8 +528,51 @@ parsers, the discovery and the test hooks, and keeps the rest unexported:
 | file | owns |
 |---|---|
 | `webman/webman.go` | HTTP client + parsers for webMAN's pages, the library sort |
+| `webman/listing.go` | `Dir`: one folder listing read back as rows, and the signs that webMAN cut it |
 | `webman/discover.go` | the LAN sweep behind auto-discovery, the last-good-host cache |
-| `webman/patch.go` | Sony's title-update index, behind a pinned root |
+| `webman/patch.go` | Sony's title-update index and its packages, behind a pinned root |
+
+After v1.1.0, four entry points came for ps3sync's `du` and `patch`; the TUI uses
+none of them:
+
+- `Client.Dir(ctx, path)` lists one folder: every row with its decoded name,
+  its escaped path (webMAN's urlenc form, `+` for a space, which `Dir` takes
+  back as is; webMAN keeps a link raw when spaces are its only change, and
+  `Dir` folds those spaces to `+`, so a folder has one spelling in every
+  path under it), folder or file, and its size (exact from the row's `title`,
+  or the rounded figure a `.pkg`, a text file or a `.SFO` shows), plus the
+  footer's counts. It lists under `/dev_hdd0` and `/dev_usbNNN` only, and it
+  refuses, before any request, a path webMAN would act on rather than list
+  (`?`, `*`, `;`, `#`, `.ps3`, the `$USERID$`, `$RND$`, `$000$` and `$NEW$`
+  tags, dot segments, raw or `%XX`; any other `$` is part of a name, as in a
+  USB drive's `$RECYCLE.BIN`). webMAN cuts a long listing itself: it stops
+  at a row count set by its page buffer, (buffer - 16 KiB)/640 - 4 rows with
+  `..` (72 at 64 KiB, 482 at 320 KiB, 4,885 at 3 MiB), and then prints a
+  footer that counts only those rows.
+  P1's cover pack stopped there: its 483 `<tr` tags are the header row and
+  482 rows. In a folder whose path ends in `/exdata` (HEN's `.rap` files, a
+  user's `.rif` files) webMAN sizes a row at 200 bytes, so the limit there
+  is (buffer - 16 KiB)/200 - 4 rows (241 at 64 KiB, 1,552 at 320 KiB,
+  15,642 at 3 MiB). So `Dir` returns `ErrCut`, with the rows it read, at
+  those counts (also for a whole folder with exactly that many rows with
+  `..`), on a footer that disagrees with the rows, and on a body at the
+  client's 4 MiB cap.
+- `Patches(ctx, id)` lists every package of the title's `-ver.xml`, oldest
+  first: version, URL, size, sha1, system version. A title Sony has no index
+  for answers 404; some titles with no updates answer 200 with an empty
+  body, which gives an empty list.
+- `FetchPatch(ctx, patch, dst)` downloads one of those packages to a file
+  and keeps it only when the size and the sha1 match. The index names the
+  package on plain-http `b0.ww.np.dl.playstation.net`, whose TLS
+  certificate belongs to a CDN and names other hosts, so the bytes come
+  over HTTPS from `a0`, which serves the same path behind the pinned root.
+- `IsNotFound(err)` is true for a 404 from any call.
+
+Probe P5 (2026-10-11, on the Mac, nothing sent to the console): BLUS30839
+01.02, 9,463,456 B. The sha1 of the whole file differs from the index's;
+the sha1 of the file without its last 32 bytes equals it. So the index's
+sha1 covers the package without its 32-byte digest, and `FetchPatch` checks
+that form.
 
 And beside it, the annexed tool:
 
@@ -564,7 +607,10 @@ Go test was written; that suite lives on in `internal/binmerge/*_test.go`.
 The rest of this section is ps3top's own. `go test` runs the parsers against
 the fixtures in `webman/testdata/` (in-game
 `cpursx.ps3`, `mygames.xml` with the game-ID-in-title setting on, and
-`mygames_info_ids.xml` with it off plus MM COVERS); `internal/ps3top/testdata/`
+`mygames_info_ids.xml` with it off plus MM COVERS; `dir_listing.html`,
+`dir_cut.html` and `ver_MOCK37016.xml` for `Dir` and `Patches`, while
+`FetchPatch` runs against a stand-in TLS server with its own root, and only
+`PS3TOP_LIVE=1` reaches Sony); `internal/ps3top/testdata/`
 keeps copies of the five the TUI's own tests read (the in-game page, both game
 lists, the two folder listings). The fixtures are **synthetic**: byte-faithful to
 real webMAN (sMAN skin) output in structure, but every game title, title ID,
