@@ -285,13 +285,30 @@ thermal screen · `m` popup message on the TV · `r` refresh now
 
 `r` vs `g` matters when you've just FTP'd an ISO over: `mygames.xml` is static
 until webMAN rebuilds it, so `r` shows you what webMAN already knows, while `g`
-fires `/refresh.ps3?xmb` (the sMAN skin's own Refresh action) to make webMAN
-re-scan the ISO folders and regenerate the XML, then reloads the list once
-webMAN has had a beat to finish writing it. The rescan holds the same one-at-a-
+fires the plain `/refresh.ps3` to make webMAN re-scan the ISO folders and
+regenerate the XML, then reloads the list once webMAN has had a beat to finish
+writing it. The rescan holds the same one-at-a-
 time action gate as mount/eject — the console is genuinely busy while it scans —
 and gets a 30s timeout instead of the usual 6s, since it walks every ISO
 directory. Neither key loses your place: a reload re-finds the selected game by
 identity instead of dumping the cursor back to row 1.
+
+Why not `/refresh.ps3?xmb`, the sMAN skin's own Refresh action: webMAN reloads
+the XMB when any text after `/refresh.ps3` holds `xmb` (`include/cmd/refresh.h`
+upstream), so `/refresh.ps3$xmb` reloads it too. On the console (2026-10-11)
+that reload started the title whose icon had the XMB focus: Couch started about
+12 s after a `?xmb` rescan. The plain form answered 200 and rebuilt
+`mygames.xml` (its time moved), so `g` sends that. That check ran with a game
+running, so whether the plain form can start the focused title from the XMB is
+not checked on the console. webMAN's source has no `reload_xmb`, button press
+or launch on that path. With webMAN's `root` setting on, the scan also moves
+the XMB focus to webMAN Games and reloads the Game column
+(`include/scan/games_xml.h` lines 1526 to 1532), with no button press. The
+cost: the TV may not show a new game until the XMB reads `mygames.xml` again.
+ps3top's own list shows it after the reload that follows `g`. webMAN tells the
+XMB to reload the Game column before it writes the new file, and its own reply
+to `/refresh.ps3` offers a console restart. Whether opening the webMAN Games
+folder again is enough is not checked.
 
 Inside the thermal screen: `+`/`−` (or `↑↓`) fan speed in manual mode, target
 temperature in dynamic — the footer names whichever it currently is · `f` fan
@@ -354,7 +371,7 @@ skips the confirm.
   `/setup.ps3`: ticked, the title ID is a `[BLES00455]` suffix on the title;
   unticked, it's in the `info` field as `hdd0/PS3ISO | BLES00455 | v01.90`,
   version included. Both parse, and the version shows in the art panel. `g` first asks webMAN to rebuild it
-  (`/refresh.ps3?xmb`, 30s timeout — a rescan walks every ISO directory) and
+  (`/refresh.ps3`, 30s timeout — a rescan walks every ISO directory) and
   reloads 1.5s after the reply, in case the XML is still being written when
   webMAN answers.
 - Library sizes: after every games load, one `GET /dev_hdd0/<folder>/` per
@@ -393,7 +410,7 @@ skips the confirm.
   installed title by its folder, `webman.PlayFolder`) · `/install.ps3<pkg-path>`
   (install a pkg already on the console, `webman.Install`; these two serve
   ps3run, the TUI does not send them) · `/popup.ps3/<text>` ·
-  `/refresh.ps3?xmb` (library rescan) · `/xmb.ps3$exit` (quit game to XMB)
+  `/refresh.ps3` (library rescan, never `?xmb`) · `/xmb.ps3$exit` (quit game to XMB)
   · `/xmb.ps3$reloadgame` (restart game) · `/shutdown.ps3` · `/restart.ps3` ·
   `/cpursx.ps3?up|dn|mode` (fan; the reply is the new status page, so these
   cost one request and no follow-up poll).

@@ -807,6 +807,8 @@ func TestActionEndpoints(t *testing.T) {
 		{"restart", func() error { return cli.Restart(ctx) }, "/restart.ps3"},
 		{"exit game", func() error { return cli.ExitGame(ctx) }, "/xmb.ps3$exit"},
 		{"restart game", func() error { return cli.ReloadGame(ctx) }, "/xmb.ps3$reloadgame"},
+		// the plain form: ?xmb also reloads the XMB, which can start the focused title
+		{"rescan", func() error { return cli.Rescan(ctx) }, "/refresh.ps3"},
 		// the message is path-escaped, so spaces and slashes can't reshape the URL
 		{"popup", func() error { return cli.Popup(ctx, "hello there/x") }, "/popup.ps3/hello%20there%2Fx"},
 		// the two ps3run entry points: an installed folder by name, a pkg by its console path

@@ -581,9 +581,12 @@ func (c *Client) ReloadGame(ctx context.Context) error { return c.fire(ctx, "/xm
 
 // Rescan asks webMAN to re-scan the ISO folders and rebuild the XMB game XML —
 // the only way a freshly FTP'd ISO shows up, since mygames.xml is static until
-// webMAN regenerates it. ?xmb is what the sMAN skin's own Refresh menu item
-// sends; the plain /refresh.ps3 rebuilds the DB but not the XML we read.
-func (c *Client) Rescan(ctx context.Context) error { return c.fire(ctx, "/refresh.ps3?xmb") }
+// webMAN regenerates it. It sends the plain /refresh.ps3: webMAN rebuilds
+// mygames.xml for it and answers when the scan ends (upstream
+// include/cmd/refresh.h). The ?xmb form (the sMAN skin's Refresh item) also
+// reloads the XMB, and on the console (2026-10-11) that reload started the
+// title whose icon had the XMB focus, so Rescan never sends it.
+func (c *Client) Rescan(ctx context.Context) error { return c.fire(ctx, "/refresh.ps3") }
 
 func (c *Client) Popup(ctx context.Context, msg string) error {
 	return c.fire(ctx, "/popup.ps3/"+url.PathEscape(msg))

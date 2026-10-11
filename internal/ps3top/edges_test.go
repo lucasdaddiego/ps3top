@@ -188,9 +188,10 @@ func TestRefreshKeyDefersTheStatusPollWhileBusy(t *testing.T) {
 }
 
 // g's rescan taken to the wire: webMAN must be asked to rebuild its game
-// database (?xmb — the variant that regenerates the XML we read), because
-// re-fetching mygames.xml alone can never surface an ISO FTP'd over after
-// boot. The reload that follows arrives as its own scheduled message.
+// list (the plain /refresh.ps3, which regenerates the XML we read; ?xmb also
+// reloads the XMB, which can start the focused title), because re-fetching
+// mygames.xml alone can never surface an ISO FTP'd over after boot. The
+// reload that follows arrives as its own scheduled message.
 func TestRescanReachesTheConsoleAndReloads(t *testing.T) {
 	games, err := os.ReadFile("testdata/mygames.xml")
 	if err != nil {
@@ -219,8 +220,8 @@ func TestRescanReachesTheConsoleAndReloads(t *testing.T) {
 		t.Errorf("no immediate feedback for a seconds-long round trip: %q", m.flash)
 	}
 	m = exec(t, m, cmd)
-	if got != "/refresh.ps3?xmb" {
-		t.Errorf("rescan hit %q, want /refresh.ps3?xmb", got)
+	if got != "/refresh.ps3" {
+		t.Errorf("rescan hit %q, want /refresh.ps3", got)
 	}
 	if m.actBusy {
 		t.Error("gate still held after the rescan replied")
