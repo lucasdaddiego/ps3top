@@ -38,10 +38,18 @@ test: ## Vet and run the test suite with the race detector
 	go vet ./...
 	go test -race ./...
 
-lint: ## Vet, gofmt check, and staticcheck when it's installed
+# staticcheck runs only when it can read this Go version's export data: its
+# "internal error in importing" is the tool failing, not a finding. A real
+# finding still fails the target.
+lint: ## Vet, gofmt check, and staticcheck when it can read this Go version
 	go vet ./...
 	@test -z "$$(gofmt -l .)" || { gofmt -l .; echo "gofmt: files need formatting"; exit 1; }
-	@command -v staticcheck >/dev/null && staticcheck ./... || echo "staticcheck not installed (go install honnef.co/go/tools/cmd/staticcheck@latest)"
+	@command -v staticcheck >/dev/null || { echo "staticcheck skipped: not installed (go install honnef.co/go/tools/cmd/staticcheck@latest)"; exit 0; }; \
+	out=$$(staticcheck ./... 2>&1); st=$$?; \
+	if echo "$$out" | grep -q "internal error in importing"; then \
+		echo "staticcheck skipped: it cannot read $$(go env GOVERSION) export data"; \
+	elif [ $$st -ne 0 ]; then echo "$$out"; exit $$st; \
+	else echo "staticcheck: ok"; fi
 
 tidy: ## Update dependencies to their latest minor/patch and tidy go.mod
 	go get -u ./...
