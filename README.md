@@ -532,7 +532,7 @@ parsers, the discovery and the test hooks, and keeps the rest unexported:
 | `webman/discover.go` | the LAN sweep behind auto-discovery, the last-good-host cache |
 | `webman/patch.go` | Sony's title-update index and its packages, behind a pinned root |
 
-After v1.1.0, four entry points came for ps3sync's `du` and `patch`; the TUI uses
+v1.2.0 adds four entry points for ps3sync's `du` and `patch`; the TUI uses
 none of them:
 
 - `Client.Dir(ctx, path)` lists one folder: every row with its decoded name,
