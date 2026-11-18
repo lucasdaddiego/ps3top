@@ -5,8 +5,13 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    # Wait 7 days: a hijacked release is usually removed by then. Security updates ignore the cooldown.
+    cooldown:
+      default-days: 7
   - package-ecosystem: gomod
     directory: /
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    cooldown:
+      default-days: 7
